@@ -57,6 +57,9 @@ public:
     static std::unordered_map<const AstVar*, AstVar*>
     newSvaLocalVars(const AstNodeFTask* ftaskp, AstNodeModule* modp,
                     V3UniqueNames& names) VL_MT_DISABLED;
+    // Relink a body inlined at instp to the instancing scope, returning the possibly replaced body
+    static AstNode* relinkSvaInstanceBody(AstNode* bodyp,
+                                          const AstNodeFTaskRef* instp) VL_MT_DISABLED;
 };
 
 class V3Assert final {
