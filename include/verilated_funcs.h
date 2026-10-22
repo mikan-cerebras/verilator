@@ -275,11 +275,11 @@ inline std::string VL_CVT_N_CSTR(const char* lhsp) VL_PURE {
     return lhsp ? std::string{lhsp} : ""s;
 }
 
-// Return queue from an unpacked array
-template <typename T, std::size_t N_Depth>
+// Return queue from an unpacked array, from its last element if T_Reverse
+template <bool T_Reverse, typename T, std::size_t N_Depth>
 inline VlQueue<T> VL_CVT_UNPACK_TO_Q(const VlUnpacked<T, N_Depth>& q) VL_PURE {
     VlQueue<T> ret;
-    for (size_t i = 0; i < N_Depth; ++i) ret.push_back(q[i]);
+    for (size_t i = 0; i < N_Depth; ++i) ret.push_back(q[T_Reverse ? N_Depth - 1 - i : i]);
     return ret;
 }
 
