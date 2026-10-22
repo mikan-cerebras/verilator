@@ -3242,6 +3242,20 @@ class WidthVisitor final : public VNVisitor {
             }
             AstNodeDType* const fromDtp = nodep->fromp()->dtypep()->skipRefToEnump();
             VCastable castable = AstNode::computeCastable(toDtp, fromDtp, nodep->fromp());
+            // A dynamic array or unbounded queue is assignment compatible with another unpacked
+            // array kind of equivalent elements (IEEE 1800-2023 7.6), so the cast converts like
+            // the assignment (6.24.1). Not in computeCastable, as e.g. ?: does not convert.
+            // Bounded queues have another C++ type, not converted here.
+            const AstQueueDType* const toQueuep = VN_CAST(toDtp, QueueDType);
+            const AstQueueDType* const fromQueuep = VN_CAST(fromDtp, QueueDType);
+            if (castable == VCastable::UNSUPPORTED
+                && (VN_IS(toDtp, DynArrayDType) || (toQueuep && !toQueuep->boundp()))
+                && (VN_IS(fromDtp, DynArrayDType) || (fromQueuep && !fromQueuep->boundp())
+                    || VN_IS(fromDtp, UnpackArrayDType))
+                && AstNode::computeCastable(toDtp->subDTypep(), fromDtp->subDTypep(), nullptr)
+                       .isSameish()) {
+                castable = VCastable::COMPATIBLE;
+            }
             // A string and a real are neither assignment compatible nor both bit-stream types
             // (IEEE 1800-2023 6.24.1, 6.24.3), and a class handle does not convert to a string
             if ((toDtp->isString() && (fromDtp->isDouble() || VN_IS(fromDtp, ClassRefDType)))
@@ -3317,6 +3331,10 @@ class WidthVisitor final : public VNVisitor {
                     // Can just remove cast, but need extend placeholder
                     // so we can avoid warning message
                 }
+            } else if (VN_IS(fromDtp, UnpackArrayDType)
+                       && (VN_IS(toDtp, DynArrayDType) || VN_IS(toDtp, QueueDType))) {
+                newp = new AstCvtUnpackToQueue{nodep->fileline(), nodep->fromp()->unlinkFrBack(),
+                                               toDtp};
             } else if (VN_IS(toDtp, QueueDType)) {
                 if (VN_IS(fromDtp, BasicDType)) {
                     newp = new AstCvtPackedToArray{nodep->fileline(),
@@ -3339,6 +3357,8 @@ class WidthVisitor final : public VNVisitor {
                                                   dstElementBits,
                                                   srcElementBits};
                 }
+            } else if (VN_IS(toDtp, DynArrayDType)) {
+                // Same representation as a queue, can just remove cast
             } else if (VN_IS(toDtp, ClassRefDType) || castable.isSameish()) {
                 // Can just remove cast
             } else {
