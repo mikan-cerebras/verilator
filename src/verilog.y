@@ -4205,6 +4205,14 @@ task_subroutine_callNoMethod<nodeExprp>:    // function_subroutine_callNoMethod 
                                                               = new AstWithParse{$2, $1, $4, $6};
                                                           withParsep->restricted(true);
                                                           $$ = withParsep; }
+        //                      // IEEE: randomize_call without parentheses
+        |       idRandomize yWITH__CUR constraint_block
+                        { $$ = new AstWithParse{$2, new AstFuncRef{$<fl>1, *$1}, nullptr, $3}; }
+        |       idRandomize yWITH__PAREN_CUR '(' inlineConstraintIdListE ')' constraint_block
+                        { AstWithParse* const withParsep
+                              = new AstWithParse{$2, new AstFuncRef{$<fl>1, *$1}, $4, $6};
+                          withParsep->restricted(true);
+                          $$ = withParsep; }
         ;
 
 function_subroutine_callNoMethod<nodeExprp>:        // IEEE: function_subroutine_call (as function)
@@ -4226,6 +4234,14 @@ function_subroutine_callNoMethod<nodeExprp>:        // IEEE: function_subroutine
                                                               = new AstWithParse{$2, $1, $4, $6};
                                                           withParsep->restricted(true);
                                                           $$ = withParsep; }
+        //                      // IEEE: randomize_call without parentheses
+        |       idRandomize yWITH__CUR constraint_block
+                        { $$ = new AstWithParse{$2, new AstFuncRef{$<fl>1, *$1}, nullptr, $3}; }
+        |       idRandomize yWITH__PAREN_CUR '(' inlineConstraintIdListE ')' constraint_block
+                        { AstWithParse* const withParsep
+                              = new AstWithParse{$2, new AstFuncRef{$<fl>1, *$1}, $4, $6};
+                          withParsep->restricted(true);
+                          $$ = withParsep; }
         ;
 
 system_t_stmt_call<nodeStmtp>:  // IEEE: part of system_tf_call (as task returning statement)
