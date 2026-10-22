@@ -3040,7 +3040,7 @@ class AssertNfaVisitor final : public VNVisitor {
     void inlineSequenceRef(AstFuncRef* funcrefp, AstSequence* seqp) {
         AstNodeExpr* const bodyExprp = getSequenceBodyExprp(seqp);
         UASSERT_OBJ(bodyExprp, funcrefp, "Sequence has no body expression");
-        AstNodeExpr* const clonedp
+        AstNodeExpr* clonedp
             = VN_AS(V3AssertCommon::relinkSvaInstanceBody(bodyExprp->cloneTree(false), funcrefp),
                     NodeExpr);
 
@@ -3051,6 +3051,14 @@ class AssertNfaVisitor final : public VNVisitor {
         }
         const std::unordered_map<const AstVar*, AstVar*> localVarMap
             = V3AssertCommon::newSvaLocalVars(seqp, m_modp, m_propVarNames);
+        // A body that is only a formal argument is replaced as a whole
+        if (const AstVarRef* const refp = VN_CAST(clonedp, VarRef)) {
+            const auto it = portMap.find(refp->varp());
+            if (it != portMap.end()) {
+                VL_DO_DANGLING(clonedp->deleteTree(), clonedp);
+                clonedp = it->second->cloneTree(false);
+            }
+        }
         clonedp->foreach([&](AstVarRef* refp) {
             const auto portIt = portMap.find(refp->varp());
             if (portIt != portMap.end()) {
