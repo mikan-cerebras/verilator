@@ -15,6 +15,12 @@ package Pkg;
     BAR,
     BAZ
   } enum_t;
+
+  task automatic disable_named;
+    begin : named
+    end
+    disable named;
+  endtask
 endpackage
 package PkgImp;
   import Pkg::*;
