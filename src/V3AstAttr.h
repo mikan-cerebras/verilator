@@ -2088,6 +2088,7 @@ public:
         NO_INLINE_TASK,
         PUBLIC_MODULE,
         PUBLIC_TASK,
+        TIMEPRECISION_SET,
         TIMEUNIT_SET,
         UNROLL_DISABLE,
         UNROLL_FULL,
@@ -2107,6 +2108,7 @@ public:
             "NO_INLINE_TASK",  //
             "PUBLIC_MODULE",  //
             "PUBLIC_TASK",  //
+            "TIMEPRECISION_SET",  //
             "TIMEUNIT_SET",  //
             "UNROLL_DISABLE",  //
             "UNROLL_FULL",  //
