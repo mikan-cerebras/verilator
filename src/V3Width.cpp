@@ -287,6 +287,8 @@ class WidthVisitor final : public VNVisitor {
     AstNodeExpr* m_fromParentp = nullptr;  // Method call or member select iterating its fromp()
     AstNode* m_seqUnsupp = nullptr;  // Property has unsupported node
     bool m_hasSExpr = false;  // Property has a sequence expression
+    bool m_underDisableIff = false;  // Visiting under a disable iff condition
+    std::unordered_set<const AstVar*> m_propLocalVarps;  // Local variables of current property
     const AstCell* m_cellp = nullptr;  // Current cell for arrayed instantiations
     std::vector<AstVar*> m_splitIfaceArrayVarps;  // Interface arrays split by V3Param
     const AstEnumItem* m_enumItemp = nullptr;  // Current enum item
@@ -3722,6 +3724,10 @@ class WidthVisitor final : public VNVisitor {
             // Var hasn't been widthed, so make it so.
             userIterate(nodep->varp(), nullptr);
         }
+        if (m_underDisableIff && m_propLocalVarps.count(nodep->varp())) {
+            nodep->v3error("Disable iff condition references local variable "
+                           << nodep->prettyNameQ() << " (IEEE 1800-2023 16.12)");
+        }
         if (!m_paramsOnly && nodep->varp()->isIfaceArraySplit()) {
             replaceSplitIfaceArrayRef(nodep);
             return;
@@ -7017,6 +7023,8 @@ class WidthVisitor final : public VNVisitor {
             }
             userIterateAndNext(nodep->sensesp(), nullptr);
             if (nodep->disablep()) {
+                VL_RESTORER(m_underDisableIff);
+                m_underDisableIff = true;
                 iterateCheckBool(nodep, "Disable", nodep->disablep(),
                                  BOTH);  // it's like an if() condition.
             }
@@ -8258,11 +8266,15 @@ class WidthVisitor final : public VNVisitor {
         m_underSExpr = false;
         m_cycleDelayPropp = nullptr;
         m_underSvaExpr = true;
+        VL_RESTORER(m_underDisableIff);
+        m_underDisableIff = false;
+        VL_RESTORER_CLEAR(m_propLocalVarps);
         // Property call will be replaced by property body in V3AssertPre. Property body has bit
         // dtype, so set it here too
         nodep->dtypeSetBit();
         for (AstNode* propStmtp = nodep->stmtsp(); propStmtp; propStmtp = propStmtp->nextp()) {
-            if (VN_IS(propStmtp, Var)) {
+            if (AstVar* const varp = VN_CAST(propStmtp, Var)) {
+                if (!varp->isIO()) m_propLocalVarps.emplace(varp);
                 userIterate(propStmtp, nullptr);
             } else if (VN_IS(propStmtp, PropSpec)) {
                 iterateCheckSelf(nodep, "PropSpec", propStmtp, SELF, BOTH);
