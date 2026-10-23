@@ -288,6 +288,7 @@ class WidthVisitor final : public VNVisitor {
     AstNode* m_seqUnsupp = nullptr;  // Property has unsupported node
     bool m_hasSExpr = false;  // Property has a sequence expression
     bool m_underDisableIff = false;  // Visiting under a disable iff condition
+    bool m_underSampledArg = false;  // Visiting under a sampled value function argument
     std::unordered_set<const AstVar*> m_propLocalVarps;  // Local variables of current property
     const AstCell* m_cellp = nullptr;  // Current cell for arrayed instantiations
     std::vector<AstVar*> m_splitIfaceArrayVarps;  // Interface arrays split by V3Param
@@ -1694,11 +1695,16 @@ class WidthVisitor final : public VNVisitor {
                           "Unsupported/Illegal: empty queue ('{}') in this context");
         }
     }
+    // IEEE 1800-2023 16.9.3: A sampled value function argument cannot reference local variables
+    void iterateSampledArg(AstNodeExpr* nodep, AstNode* exprp) {
+        VL_RESTORER(m_underSampledArg);
+        m_underSampledArg = true;
+        iterateCheckSizedSelf(nodep, "LHS", exprp, SELF, BOTH, /* deferUntyped */ true);
+    }
     void visit(AstFell* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             userIterate(nodep->sentreep(), nullptr);
             nodep->dtypeSetBit();
         }
@@ -1706,16 +1712,14 @@ class WidthVisitor final : public VNVisitor {
     void visit(AstFalling* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             nodep->dtypeSetBit();
         }
     }
     void visit(AstFuture* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             userIterate(nodep->sentreep(), nullptr);
             nodep->dtypeFrom(nodep->exprp());
         }
@@ -1723,8 +1727,7 @@ class WidthVisitor final : public VNVisitor {
     void visit(AstPast* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             nodep->dtypeFrom(nodep->exprp());
             if (nodep->ticksp()) {
                 iterateCheckSizedSelf(nodep, "Ticks", nodep->ticksp(), SELF, BOTH,
@@ -1863,16 +1866,14 @@ class WidthVisitor final : public VNVisitor {
     void visit(AstRising* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             nodep->dtypeSetBit();
         }
     }
     void visit(AstRose* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             userIterate(nodep->sentreep(), nullptr);
             nodep->dtypeSetBit();
         }
@@ -1881,8 +1882,7 @@ class WidthVisitor final : public VNVisitor {
     void visit(AstSampled* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             nodep->dtypeFrom(nodep->exprp());
         }
     }
@@ -1939,8 +1939,7 @@ class WidthVisitor final : public VNVisitor {
     void visit(AstStable* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             userIterate(nodep->sentreep(), nullptr);
             nodep->dtypeSetBit();
         }
@@ -1948,8 +1947,7 @@ class WidthVisitor final : public VNVisitor {
     void visit(AstSteady* nodep) override {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            iterateCheckSizedSelf(nodep, "LHS", nodep->exprp(), SELF, BOTH,
-                                  /* deferUntyped */ true);
+            iterateSampledArg(nodep, nodep->exprp());
             nodep->dtypeSetBit();
         }
     }
@@ -3664,6 +3662,9 @@ class WidthVisitor final : public VNVisitor {
         if (m_underDisableIff && m_propLocalVarps.count(nodep->varp())) {
             nodep->v3error("Disable iff condition references local variable "
                            << nodep->prettyNameQ() << " (IEEE 1800-2023 16.12)");
+        } else if (m_underSampledArg && m_propLocalVarps.count(nodep->varp())) {
+            nodep->v3error("Sampled value function argument references local variable "
+                           << nodep->prettyNameQ() << " (IEEE 1800-2023 16.9.3)");
         }
         if (!m_paramsOnly && nodep->varp()->isIfaceArraySplit()) {
             replaceSplitIfaceArrayRef(nodep);
@@ -8199,6 +8200,8 @@ class WidthVisitor final : public VNVisitor {
         m_underSvaExpr = true;
         VL_RESTORER(m_underDisableIff);
         m_underDisableIff = false;
+        VL_RESTORER(m_underSampledArg);
+        m_underSampledArg = false;
         VL_RESTORER_CLEAR(m_propLocalVarps);
         // Property call will be replaced by property body in V3AssertPre. Property body has bit
         // dtype, so set it here too
