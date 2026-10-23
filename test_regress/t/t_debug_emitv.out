@@ -315,7 +315,7 @@ module Vt_debug_emitv_t;
                     begin
                         $write("%%Error: %s:%0d:  got=%0d exp=%0d\n", 
                                136'h742f745f64656275675f656d6974762e76, 
-                               'sh111, SUB_B, 2'h1);
+                               'sh112, SUB_B, 2'h1);
                         $stop;
                     end
                 end
@@ -1565,6 +1565,10 @@ endmodule
 package Vt_debug_emitv_p;
     logic pkgvar;
 endpackage
+module Vt_debug_emitv_defparam_gen__pie9c2606d;
+    /* generate */ begin : dpg
+    end : dpg
+endmodule
 package Vt_debug_emitv_Pkg;
     bit signed [31:0]  PKG_PARAM;
     typedef enum int signed{
@@ -1573,3 +1577,9 @@ package Vt_debug_emitv_Pkg;
         BAZ = 32'h2
     } enum_t;
 endpackage
+module Vt_debug_emitv_defparam_leaf;
+    bit signed [31:0]  P;
+endmodule
+module Vt_debug_emitv_defparam_leaf__P2;
+    bit signed [31:0]  P;
+endmodule
