@@ -1805,3 +1805,9 @@ package Pkg;
         BAZ = 32'h2
     } enum_t;
 endpackage
+module Vt_debug_emitv_defparam_leaf;
+    bit signed [31:0]  P;
+endmodule
+module Vt_debug_emitv_defparam_leaf__P2;
+    bit signed [31:0]  P;
+endmodule
