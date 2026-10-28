@@ -22,6 +22,11 @@ function int get_val_set_5(ref int x);
   return y;
 endfunction
 
+function automatic int set_get(ref int aa[int], input int k, const ref int x);
+  aa[k] = 7;
+  return x;
+endfunction
+
 class Cls;
   function int get_val_set_2(ref int x);
     automatic int y = x;
@@ -88,6 +93,37 @@ module t;
     b = cls.get_val_set_2(st.arr[1][2][0].x);
     `checkh(st.arr[1][2][0].x, 2);
     `checkh(b, 5);
+
+    begin
+      int assoc[int];
+      int wild[*];
+      int assoc_2d[string][int];
+      assoc[-3] = 10;
+      b = get_val_set_5(assoc[-3]);
+      `checkh(assoc[-3], 5);
+      `checkh(b, 10);
+      b = cls.get_val_set_2(assoc[-3]);
+      `checkh(assoc[-3], 2);
+      `checkh(b, 5);
+      // Missing element is created
+      b = get_val_set_5(assoc[a]);
+      `checkh(assoc[2], 5);
+      `checkh(b, 0);
+      `checkh(assoc.size(), 2);
+      // A const ref sees a write made to the element during the call
+      b = set_get(assoc, -3, assoc[-3]);
+      `checkh(b, 7);
+
+      wild[8'h7] = 10;
+      b = get_val_set_5(wild[8'h7]);
+      `checkh(wild[8'h7], 5);
+      `checkh(b, 10);
+
+      assoc_2d["k"][1] = 10;
+      b = cls.get_val_set_2(assoc_2d["k"][1]);
+      `checkh(assoc_2d["k"][1], 2);
+      `checkh(b, 10);
+    end
 
     $write("*-* All Finished *-*\n");
     $finish;
