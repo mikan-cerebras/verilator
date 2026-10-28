@@ -4824,12 +4824,28 @@ class LinkDotResolveVisitor final : public VNVisitor {
 
                     VL_DO_DANGLING(pushDeletep(nodep), nodep);
                 } else if (allowVar) {
-                    // Items of an automatic task or function cannot be referenced hierarchically
-                    // from outside of it
                     VSymEnt* scopeSymp = m_ds.m_dotSymp;
                     while (VN_IS(scopeSymp->nodep(), NodeBlock)) scopeSymp = scopeSymp->parentp();
                     const AstNodeFTask* const ftaskp = VN_CAST(scopeSymp->nodep(), NodeFTask);
-                    if (!first && ftaskp && ftaskp != m_ftaskp && varp->lifetime().isAutomatic()) {
+                    if (!first && (VN_IS(ftaskp, Property) || VN_IS(ftaskp, Sequence))) {
+                        // Items of a sequence or property are not visible outside of it
+                        if (varp->isIO()) {
+                            nodep->v3error("Hierarchical reference to "
+                                           << varp->prettyNameQ()
+                                           << ", a formal argument of a sequence or property");
+                        } else {
+                            nodep->v3error("Hierarchical reference to "
+                                           << varp->prettyNameQ()
+                                           << ", a local variable of a sequence or property"
+                                              " (IEEE 1800-2023 16.10)");
+                        }
+                        // No second error on the dotted path; the reference becomes a constant
+                        m_ds.m_dotText = "";
+                        m_ds.m_dotErr = true;
+                    } else if (!first && ftaskp && ftaskp != m_ftaskp
+                               && varp->lifetime().isAutomatic()) {
+                        // Items of an automatic task or function cannot be referenced
+                        // hierarchically from outside of it
                         if (varp->isIO() && !ftaskp->lifetime().isAutomatic()) {
                             // Static task/function ports are static, though V3LinkParse marks
                             // them automatic when not needed after the call
