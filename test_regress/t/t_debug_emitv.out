@@ -1787,6 +1787,23 @@ module seq_event;
 endmodule
 package p;
     logic pkgvar;
+    function ident;
+        input int value;
+        begin : label15
+            ident = /*CRESET*/;
+            ident = value;
+            disable label15;
+        end
+    endfunction
+    function uses_const_func;
+        logic [1:0]  v;
+        begin : label16
+            uses_const_func = /*CRESET*/;
+            v = /*CRESET*/;
+            uses_const_func = 32'h2;
+            disable label16;
+        end
+    endfunction
 endpackage
 module param_mod__Tzc7cce3e0_P3;
     parameter int PW = 32'sh3;
