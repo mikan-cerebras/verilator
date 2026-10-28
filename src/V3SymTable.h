@@ -57,6 +57,11 @@ class VSymEnt final {
     bool m_importAmbiguous = false;  // Wildcard imported, but a different item of the same name
                                      // was also wildcard imported (IEEE 1800-2023 26.3)
     bool m_hidesWildcard = false;  // Declaration hides a wildcard imported item of the same name
+    bool m_referenced = false;  // Found by a lookup, so a wildcard import actually imports it
+    // Wildcard imported entry of the package that exported this, which only exports it if
+    // referenced in that package (IEEE 1800-2023 26.6)
+    const VSymEnt* m_exportedWildcardp = nullptr;
+    const VSymEnt* m_exporterp = nullptr;  // Package table of m_exportedWildcardp
 #ifdef VL_DEBUG
     VL_DEFINE_DEBUG_FUNCTIONS;
 #else
@@ -130,6 +135,9 @@ public:
     bool importedWildcard() const { return m_importedWildcard; }
     bool importAmbiguous() const { return m_importAmbiguous; }
     bool hidesWildcard() const { return m_hidesWildcard; }
+    const VSymEnt* exportedWildcardp() const { return m_exportedWildcardp; }
+    const VSymEnt* exporterp() const { return m_exporterp; }
+    bool referenced() const { return m_referenced; }
     void hidesWildcard(bool flag) { m_hidesWildcard = flag; }
     VSymEnt* insert(const string& name, VSymEnt* entp) {
         UINFO(9, "     SymInsert se" << cvtToHex(this) << " '" << name << "' se" << cvtToHex(entp)
@@ -167,14 +175,17 @@ public:
     VSymEnt* findIdFlat(const string& name) const {
         // Find identifier without looking upward through symbol hierarchy
         // First, scan this begin/end block or module for the name
+        // Marks the entry referenced even if the lookup is not a reference, e.g. a duplicate
+        // check, which only makes the wildcard export check (IEEE 1800-2023 26.6) more lenient
         const auto it = m_idNameMap.find(name);
         UINFO(9, "     SymFind   se"
                      << cvtToHex(this) << " '" << name << "' -> "
                      << (it == m_idNameMap.end() ? "NONE"
                                                  : "se" + cvtToHex(it->second)
                                                        + " n=" + cvtToHex(it->second->nodep())));
-        if (it != m_idNameMap.end()) return it->second;
-        return nullptr;
+        if (it == m_idNameMap.end()) return nullptr;
+        it->second->m_referenced = true;
+        return it->second;
     }
     static bool checkSimilarname(const AstNode* nodep) {
         // Only declarations that can contribute a name to the netlist handed
@@ -240,9 +251,11 @@ public:
 
 private:
     void importOneSymbol(VSymGraph* graphp, const string& name, const VSymEnt* srcp,
-                         bool honorExport, bool wildcard) {
+                         const VSymEnt* srcTablep, bool honorExport, bool wildcard) {
         if (honorExport && !srcp->exported()) return;
         if (VSymEnt* const existp = findIdFlat(name)) {
+            // Also visible by this import, so not only through a wildcard export
+            if (existp->nodep() == srcp->nodep()) existp->m_exportedWildcardp = nullptr;
             // Declarations and explicit imports take precedence over wildcard imports
             if (!existp->m_importedWildcard) return;
             if (wildcard) {
@@ -255,12 +268,22 @@ private:
         symp->exported(false);  // Can't reimport an import without an export
         symp->imported(true);
         symp->m_importedWildcard = wildcard;
+        if (srcp->m_importedWildcard) {
+            symp->m_exportedWildcardp = srcp;
+            symp->m_exporterp = srcTablep;
+        }
         reinsert(name, symp);
     }
-    void exportOneSymbol(VSymGraph* /*graphp*/, const string& name, const VSymEnt* srcp) const {
+    void exportOneSymbol(VSymGraph* /*graphp*/, const string& name, const VSymEnt* srcp,
+                         bool wildcard) const {
         if (srcp->exported()) {
-            if (VSymEnt* const symp = findIdFlat(name)) {  // Should already exist in current table
+            // Should already exist in current table; not findIdFlat as is not a reference
+            const auto it = m_idNameMap.find(name);
+            if (it != m_idNameMap.end()) {
+                VSymEnt* const symp = it->second;
                 if (!symp->exported()) symp->exported(true);
+                // A named export makes the name available even if not referenced
+                if (!wildcard) symp->m_referenced = true;
             }
         }
     }
@@ -281,7 +304,7 @@ public:
         for (IdNameMap::const_iterator it = srcp->m_idNameMap.begin();
              it != srcp->m_idNameMap.end(); ++it) {
             if (!haveExterns.count(it->first))
-                importOneSymbol(graphp, it->first, it->second, false, false);
+                importOneSymbol(graphp, it->first, it->second, srcp, false, false);
         }
     }
     void importFromPackage(VSymGraph* graphp, const VSymEnt* srcp, const string& id_or_star,
@@ -292,12 +315,12 @@ public:
         if (id_or_star != "*") {
             const auto it = srcp->m_idNameMap.find(id_or_star);
             if (it != srcp->m_idNameMap.end()) {
-                importOneSymbol(graphp, it->first, it->second, true, false);
+                importOneSymbol(graphp, it->first, it->second, srcp, true, false);
             }
         } else {
             for (IdNameMap::const_iterator it = srcp->m_idNameMap.begin();
                  it != srcp->m_idNameMap.end(); ++it) {
-                importOneSymbol(graphp, it->first, it->second, true, trackWildcard);
+                importOneSymbol(graphp, it->first, it->second, srcp, true, trackWildcard);
             }
         }
     }
@@ -305,11 +328,12 @@ public:
         // Export tokens from source symbol table into this symbol table
         if (id_or_star != "*") {
             const auto it = vlstd::as_const(srcp->m_idNameMap).find(id_or_star);
-            if (it != srcp->m_idNameMap.end()) exportOneSymbol(graphp, it->first, it->second);
+            if (it != srcp->m_idNameMap.end())
+                exportOneSymbol(graphp, it->first, it->second, false);
         } else {
             for (IdNameMap::const_iterator it = srcp->m_idNameMap.begin();
                  it != srcp->m_idNameMap.end(); ++it) {
-                exportOneSymbol(graphp, it->first, it->second);
+                exportOneSymbol(graphp, it->first, it->second, true);
             }
         }
     }
