@@ -1023,8 +1023,15 @@ class ConstVisitor final : public VNVisitor {
         const AstNodeDType* const dtypep = fromp->dtypep()->skipRefp();
         if (const AstUnpackArrayDType* const unpackDtypep = VN_CAST(dtypep, UnpackArrayDType)) {
             for (const int idx : unpackDtypep->declRange().seqLeftToRight()) {
-                AstArraySel* const selp
-                    = new AstArraySel{fromp->fileline(), fromp->cloneTreePure(false), idx};
+                AstArraySel* selp;
+                if (const AstSliceSel* const slicep = VN_CAST(fromp, SliceSel)) {
+                    // Select from the sliced array, as a slice is a copy that cannot be written
+                    const int offset = slicep->declRange().lo() + idx - unpackDtypep->lo();
+                    selp = new AstArraySel{fromp->fileline(),
+                                           slicep->fromp()->cloneTreePure(false), offset};
+                } else {
+                    selp = new AstArraySel{fromp->fileline(), fromp->cloneTreePure(false), idx};
+                }
                 collectFixedAggregateTerms(selp, termps, packReal);
             }
             VL_DO_DANGLING(pushDeletep(fromp), fromp);
