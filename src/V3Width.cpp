@@ -3435,6 +3435,17 @@ class WidthVisitor final : public VNVisitor {
                                << fromDtp->prettyDTypeNameQ() << '\n');
             }
             if (!newp) newp = nodep->fromp()->unlinkFrBack();
+            if (toDtp->isAggregateType()
+                && (!VN_IS(toDtp, QueueDType) || VN_IS(fromDtp, QueueDType))
+                && newp->dtypep()->similarDType(toDtp)) {
+                // Replace now, as a parent may not width an aggregate operand as FINAL, e.g. a
+                // select of a queue. A cast to a queue from a stream or a vector is kept for
+                // the streaming checks, and one keeping its operand's type, e.g. a dynamic array
+                // from a queue, for its type.
+                nodep->replaceWith(newp);
+                VL_DO_DANGLING(pushDeletep(nodep), nodep);
+                return;
+            }
             nodep->fromp(newp);
             UINFOTREE(9, nodep, "", "CastOut");
             // UINFOTREE(1, nodep->backp(), "", "CastOutUpUp");
