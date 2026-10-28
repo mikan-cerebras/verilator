@@ -295,6 +295,7 @@ class WidthVisitor final : public VNVisitor {
     const AstEnumItem* m_enumItemp = nullptr;  // Current enum item
     AstNodeFTask* m_ftaskp = nullptr;  // Current function/task
     bool m_underConcAssert = false;  // Visiting a concurrent assertion expression
+    std::vector<AstAttrOf*> m_ftaskProtos;  // FUNC_*_PROTO attributes under m_ftaskp
     AstNodeModule* m_modep = nullptr;  // Current module
     const AstConstraint* m_constraintp = nullptr;  // Current constraint
     AstNodeProcedure* m_procedurep = nullptr;  // Current final/always
@@ -2790,10 +2791,12 @@ class WidthVisitor final : public VNVisitor {
             // Created by V3LinkDot only to check that the prototype was correct when we got here
             // Checked at bottom of visit(AstNodeFTask)
             // V3WidthCommit::visit(AstAttrOf) will delete nodep
+            m_ftaskProtos.push_back(nodep);
             break;
         case VAttrType::FUNC_RETURN_PROTO: {
             // Created by V3LinkDot only to check that the prototype was correct when we got here
             UASSERT_OBJ(m_ftaskp, nodep, "FUNC attr not under function");
+            m_ftaskProtos.push_back(nodep);
             AstNodeDType* const protoDtp = nodep->fromp()->dtypep();
             AstNodeDType* const declDtp = [&]() {
                 if (m_ftaskp->fvarp()) return m_ftaskp->fvarp()->dtypep();
@@ -8077,6 +8080,7 @@ class WidthVisitor final : public VNVisitor {
         VL_RESTORER(m_funcp);
         VL_RESTORER(m_ftaskp);
         VL_RESTORER(m_underSvaExpr);
+        VL_RESTORER_CLEAR(m_ftaskProtos);
         m_ftaskp = nodep;
         // The body is not in the context of the assertion that may be widthing it
         m_underSvaExpr = false;
@@ -8116,10 +8120,12 @@ class WidthVisitor final : public VNVisitor {
         for (AstNode* const stmtp : nodep->stmtspList()) {
             if (AstVar* const portp = VN_CAST(stmtp, Var)) {
                 if (portp->isIO() && !portp->isFuncReturn()) { ports.emplace_back(portp); }
-            } else if (AstAttrOf* const attrp = VN_CAST(stmtp, AttrOf)) {
-                if (attrp->attrType() == VAttrType::FUNC_ARG_PROTO) { protos.emplace_back(attrp); }
-                if (attrp->attrType() == VAttrType::FUNC_RETURN_PROTO) { protop = attrp; }
             }
+        }
+        // Not taken from stmtsp(), as V3LinkJump may have moved them under an AstJumpBlock
+        for (AstAttrOf* const attrp : m_ftaskProtos) {
+            if (attrp->attrType() == VAttrType::FUNC_ARG_PROTO) { protos.emplace_back(attrp); }
+            if (attrp->attrType() == VAttrType::FUNC_RETURN_PROTO) { protop = attrp; }
         }
         if (protop) {
             for (size_t i = 0; i < std::max(ports.size(), protos.size()); ++i) {
