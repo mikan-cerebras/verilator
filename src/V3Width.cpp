@@ -8216,7 +8216,17 @@ class WidthVisitor final : public VNVisitor {
         if (nodep->didWidth()) return;
         nodep->dtypeSetBit();
         for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
-            if (VN_IS(stmtp, Var)) {
+            if (const AstInitialStaticStmt* const initp = VN_CAST(stmtp, InitialStaticStmt)) {
+                // A declaration without an initializer only resets the variable
+                initp->foreach([](const AstAssign* assignp) {
+                    if (!VN_IS(assignp->rhsp(), CReset)) {
+                        assignp->rhsp()->v3warn(E_UNSUPPORTED,
+                                                "Unsupported: initializer of a sequence local"
+                                                " variable (IEEE 1800-2023 16.10)");
+                    }
+                });
+            }
+            if (VN_IS(stmtp, Var) || VN_IS(stmtp, InitialStaticStmt)) {
                 userIterate(stmtp, nullptr);
             } else if (VN_IS(stmtp, NodeExpr)) {
                 iterateCheckSelf(nodep, "SeqBody", stmtp, SELF, BOTH);
