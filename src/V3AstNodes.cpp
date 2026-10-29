@@ -1879,6 +1879,14 @@ const char* AstExecGraph::broken() const {
     return nullptr;
 }
 AstExecGraph::~AstExecGraph() { VL_DO_DANGLING(delete m_depGraphp, m_depGraphp); }
+void AstExprStmt::dump(std::ostream& str) const {
+    Super::dump(str);
+    if (matchItems()) str << " [MATCHITEMS]";
+}
+void AstExprStmt::dumpJson(std::ostream& str) const {
+    dumpJsonBoolIf(str, "matchItems", matchItems());
+    dumpJsonGen(str);
+}
 void AstFScanF::dump(std::ostream& str) const {
     Super::dump(str);
     str << " " << timeunit();
