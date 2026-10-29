@@ -336,7 +336,8 @@ class WidthVisitor final : public VNVisitor {
     StreamUse currentStreamUse() const { return m_vup ? m_vup->streamUse() : STREAM_USE_NONE; }
 
     static void packIfUnpacked(AstNodeExpr* const nodep) {
-        if (AstUnpackArrayDType* const unpackDTypep = VN_CAST(nodep->dtypep(), UnpackArrayDType)) {
+        if (AstUnpackArrayDType* const unpackDTypep
+            = VN_CAST(nodep->dtypep()->skipRefp(), UnpackArrayDType)) {
             const int elementsNum = unpackDTypep->arrayUnpackedElements();
             const int unpackMinBits = elementsNum * unpackDTypep->subDTypep()->widthMin();
             const int unpackBits = elementsNum * unpackDTypep->subDTypep()->width();
@@ -11662,6 +11663,13 @@ public:
                 || lowerAsFixedAggregate(lhsDTypeSkippedRefp)) {
                 FileLine* const flp = streamp->fileline();
                 AstNodeExpr* srcp = streamp->unlinkFrBack();
+                const AstNodeDType* const operandDTypep = streamp->lhsp()->dtypep()->skipRefp();
+                if (VN_IS(operandDTypep, UnpackArrayDType)
+                    && !lowerAsFixedAggregate(operandDTypep)) {
+                    // Convert an unpacked array operand to the target through its packed value
+                    packIfUnpacked(streamp->lhsp());
+                    streamp->dtypeFrom(streamp->lhsp());
+                }
                 if (packedToDynamic) {
                     // Zero-fill to a whole number of elements as for a queue target before:
                     // a '>>' stream on the left, as a queue source is read back, a '<<' stream
