@@ -3439,6 +3439,8 @@ class AssertNfaVisitor final : public VNVisitor {
                           /*vacuous=*/false);
         splitsp = splitsp ? AstNode::addNext<AstNode, AstNode>(splitsp, nonvacuousp)
                           : static_cast<AstNode*>(nonvacuousp);
+        // Another attempt failing on the same tick runs the fail action instead
+        assertp->prependFailsp(splitsp->cloneTree(true));
         assertp->addPasssp(splitsp);
     }
 
@@ -3561,7 +3563,7 @@ class AssertNfaVisitor final : public VNVisitor {
             assertp->addPasssp(ifp);
             // Fail-handler prefix for overlapping instances (IEEE 16.12):
             // fires when reject=1 && match=1 in the same cycle.
-            if (assertp->failsp()) assertp->prependFailsp(ifp->cloneTree(false));
+            assertp->prependFailsp(ifp->cloneTree(false));
         }
     }
 
@@ -3867,13 +3869,14 @@ class AssertNfaVisitor final : public VNVisitor {
 
         if (result.finalCondp && !result.finalCondp->backp()) pushDeletep(result.finalCondp);
 
-        if (splitImplicationPasssp) splitImplicationPassActions(assertAssertp, parts, matchExprp);
         if (assertAssertp) {
             attachActionHandlers(assertAssertp, splitImplicationPasssp ? nullptr : matchExprp,
                                  senTreep,
                                  replayFails ? signals.threadFailCountp : signals.successCountp,
                                  replayPasses ? signals.threadFailCountp : nullptr);
         }
+        // After the replays, which clone the fail action without the pass action prefix
+        if (splitImplicationPasssp) splitImplicationPassActions(assertAssertp, parts, matchExprp);
         VL_DO_DANGLING(pushDeletep(senTreep), senTreep);
 
         AstNode* const innerPropp = propp->propp();
