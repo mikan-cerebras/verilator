@@ -8053,7 +8053,8 @@ class WidthVisitor final : public VNVisitor {
         // Referenced sequences in assertion context will be inlined by V3AssertPre.
         if (nodep->didWidth()) return;
         nodep->dtypeSetBit();
-        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+        for (AstNode *stmtp = nodep->stmtsp(), *nextp; stmtp; stmtp = nextp) {
+            nextp = stmtp->nextp();  // The body may be replaced, e.g. a SelBit
             if (const AstInitialStaticStmt* const initp = VN_CAST(stmtp, InitialStaticStmt)) {
                 // A declaration without an initializer only resets the variable
                 initp->foreach([](const AstAssign* assignp) {
