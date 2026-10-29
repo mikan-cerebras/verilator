@@ -11746,7 +11746,9 @@ public:
         // Check width of stream and wrap if needed
         if (AstNodeStream* const streamp = VN_CAST(nodep->rhsp(), NodeStream)) {
             AstNodeDType* const lhsDTypeSkippedRefp = lhsDTypep->skipRefp();
-            const int lwidth = lhsDTypeSkippedRefp->widthStream();
+            // A string target is not fixed size, it takes the whole stream
+            const int lwidth
+                = lhsDTypeSkippedRefp->isString() ? 0 : lhsDTypeSkippedRefp->widthStream();
             const int rwidth = streamp->lhsp()->dtypep()->skipRefp()->widthStream();
             if (lwidth != 0 && lwidth < rwidth) {
                 nodep->v3widthWarn(lwidth, rwidth,
@@ -11755,7 +11757,7 @@ public:
                                        << rwidth << " bits) (IEEE 1800-2023 11.4.14)");
             }
             if (VN_IS(streamp->lhsp()->dtypep()->skipRefp(), QueueDType)
-                && !VN_IS(nodep->lhsp()->dtypep()->skipRefp(), QueueDType)) {
+                && !VN_IS(lhsDTypeSkippedRefp, QueueDType) && !lhsDTypeSkippedRefp->isString()) {
                 const int queueElementSize = streamp->lhsp()->dtypep()->subDTypep()->width();
                 UASSERT_OBJ(queueElementSize <= lwidth, nodep, "LHS < RHS");
             }
