@@ -354,7 +354,7 @@ private:
         // Clear referenced flag; sequences with isReferenced==false are deleted in assertPreAll
         seqp->isReferenced(false);
     }
-    AstPropSpec* clonePropertyBody(AstFuncRef* funcrefp, const AstProperty* propp) {
+    AstPropSpec* clonePropertyBody(AstFuncRef* funcrefp, AstProperty* propp) {
         // Clone, as the property may be instanced multiple times with different arguments, in
         // different modules, or through different hierarchical paths. Substitute an inner
         // property instance in the clone, after the outer path is applied to it.
@@ -389,6 +389,7 @@ private:
             if (localIt != localVarMap.end()) refp->varp(localIt->second);
         });  // LCOV_EXCL_LINE -- gcov attributes lambda's implicit return to `})`
 
+        V3AssertCommon::lowerSvaLocalVarInits(propp, propExprp, localVarMap);
         // Clean up argument expressions
         for (const auto& tconnect : tconnects) {
             pushDeletep(tconnect.second->exprp()->unlinkFrBack());
@@ -398,7 +399,7 @@ private:
     }
     AstPropSpec* substitutePropertyCall(AstPropSpec* nodep) {
         if (AstFuncRef* const funcrefp = VN_CAST(nodep->propp(), FuncRef)) {
-            if (const AstProperty* const propp = VN_CAST(funcrefp->taskp(), Property)) {
+            if (AstProperty* const propp = VN_CAST(funcrefp->taskp(), Property)) {
                 AstPropSpec* const propExprp = clonePropertyBody(funcrefp, propp);
 
                 // Handle case with 2 disable iff statement (IEEE 1800-2023 16.12.1)
@@ -435,7 +436,7 @@ private:
         return nodep;
     }
 
-    void substituteNestedPropertyCall(AstFuncRef* funcrefp, const AstProperty* propp) {
+    void substituteNestedPropertyCall(AstFuncRef* funcrefp, AstProperty* propp) {
         AstPropSpec* const specp = clonePropertyBody(funcrefp, propp);
         AstNode* replp = nullptr;
         if (specp->disablep()) {
@@ -1421,7 +1422,7 @@ private:
             // The replacement node will be visited by the parent's iterateChildren.
             return;
         }
-        if (const AstProperty* const propp = VN_CAST(nodep->taskp(), Property)) {
+        if (AstProperty* const propp = VN_CAST(nodep->taskp(), Property)) {
             substituteNestedPropertyCall(nodep, propp);
             return;
         }
