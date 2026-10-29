@@ -2499,6 +2499,10 @@ class WidthVisitor final : public VNVisitor {
         // Opaque returns, so arbitrary
         userIterateAndNext(nodep->lhsp(), WidthVP{SELF, BOTH, currentStreamUse()}.p());
         // Type set in constructor
+        if (nodep->lhsp()->isDouble()) {
+            replaceRealStringCvt(nodep, false);
+            return;
+        }
         // A class handle is not a legal implicit conversion to string
         if (AstNodeDType* const dt = nodep->lhsp()->dtypep()) {
             if (VN_IS(dt->skipRefToEnump(), ClassRefDType)) {
@@ -9543,7 +9547,7 @@ class WidthVisitor final : public VNVisitor {
                 case 'g':
                     if (subargp) {
                         checkFormatNumericArg(subargp, ch);
-                        if (!subargp->isDouble()) {
+                        if (!subargp->isDouble() && !isFormatNonNumericArg(subargp->dtypep())) {
                             iterateCheckReal(nodep, "Display argument", subargp, BOTH);
                         }
                         argp = nextp;
@@ -10238,6 +10242,9 @@ class WidthVisitor final : public VNVisitor {
         } else if (expDTypep->isDouble() && underp->isDouble()) {  // Also good
             underp = userIterateSubtreeReturnEdits(underp,
                                                    WidthVP{expDTypep, FINAL, childStreamUse}.p());
+        } else if ((expDTypep->isDouble() && underp->isString())
+                   || (expDTypep->isString() && underp->isDouble())) {
+            underp = replaceRealStringCvt(VN_AS(underp, NodeExpr), expDTypep->isDouble());
         } else if (expDTypep->isDouble() && !underp->isDouble()) {
             AstNode* const oldp
                 = underp;  // Need FINAL on children; otherwise splice would block it
@@ -10489,10 +10496,26 @@ class WidthVisitor final : public VNVisitor {
         return nodep;
     }
 
+    // Report an implicit conversion between string and real, and replace the operand
+    AstNodeExpr* replaceRealStringCvt(AstNodeExpr* nodep, bool toReal) {
+        // The replacement is a constant of the type the operand was converted to, so later
+        // passes see consistent types
+        nodep->v3error("Illegal implicit conversion between string and real (IEEE 1800-2023 "
+                       "6.22.3)\n"
+                       << nodep->warnMore()
+                       << "... Suggest use string method atoreal() or realtoa()");
+        AstNodeExpr* const newp
+            = toReal ? new AstConst{nodep->fileline(), AstConst::RealDouble{}, 0.0}
+                     : new AstConst{nodep->fileline(), AstConst::String{}, ""};
+        nodep->replaceWith(newp);
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+        return newp;
+    }
     AstNodeExpr* spliceCvtD(AstNodeExpr* nodep) {
         // For integer used in REAL context, convert to real
         // We don't warn here, "2.0 * 2" is common and reasonable
         if (nodep && !nodep->dtypep()->skipRefp()->isDouble()) {
+            if (nodep->isString()) return replaceRealStringCvt(nodep, true);
             UINFO(6, "   spliceCvtD: " << nodep);
             VNRelinker linker;
             nodep->unlinkFrBack(&linker);
