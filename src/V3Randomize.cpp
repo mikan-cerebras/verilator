@@ -6121,6 +6121,28 @@ class RandomizeVisitor final : public VNVisitor {
         }
     }
 
+    // Add the arrays that the class constraints resize to arrVars
+    void addResizedArrays(AstClass* const classp, VInsertionSet<AstVar*>& arrVars) {
+        const AstTask* const resizeAllTaskp
+            = VN_AS(m_memberMap.findMember(classp, "__Vresize_constrained_arrays"), Task);
+        if (!resizeAllTaskp) return;
+        // Each constraint's resize task holds only DYN_RESIZE calls on the array VarRef
+        resizeAllTaskp->foreach([&](const AstTaskRef* const refp) {
+            refp->taskp()->foreach([&](const AstCMethodHard* const resizep) {
+                arrVars.insert(VN_AS(resizep->fromp(), VarRef)->varp());
+            });
+        });
+    }
+    // Pin the sizes of the disabled arrays among arrVars
+    void addFrozenSizePins(const VInsertionSet<AstVar*>& arrVars, AstFunc* const randomizep,
+                           AstVar* const genp, AstVar* const randModeVarp) {
+        // A disabled array keeps its current size. Pin its size proxy before solving so
+        // an incompatible size constraint fails instead of resizing the frozen array.
+        for (AstVar* const arrVarp : arrVars) {
+            addFrozenSizePin(randomizep->fileline(), arrVarp, randomizep, genp, randModeVarp);
+        }
+    }
+
     static void copyVariableRegistrations(AstFunc* const sourcep, AstFunc* const targetp) {
         for (AstNode* const stmtp : sourcep->stmtspList()) {
             bool hasRegistration = false;
@@ -6150,19 +6172,12 @@ class RandomizeVisitor final : public VNVisitor {
         return callp;
     }
 
-    AstVar* addSizeSolvep(AstFunc* const randomizep, AstVar* const genp,
-                          AstVar* const randModeVarp,
-                          const VInsertionSet<AstVar*>& sizeArrayVars) {
+    AstVar* addSizeSolvep(AstFunc* const randomizep, AstVar* const genp) {
         FileLine* const fl = randomizep->fileline();
         AstVar* const sizeOkVarp = new AstVar{fl, VVarType::BLOCKTEMP, "__Vsize_ok",
                                               randomizep->findBasicDType(VBasicDTypeKwd::BIT)};
         sizeOkVarp->funcLocal(true);
         randomizep->addStmtsp(sizeOkVarp);
-        // A disabled array keeps its current size. Pin its size proxy before solving so
-        // an incompatible size constraint fails instead of resizing the frozen array.
-        for (AstVar* const arrVarp : sizeArrayVars) {
-            addFrozenSizePin(fl, arrVarp, randomizep, genp, randModeVarp);
-        }
         randomizep->addStmtsp(new AstAssign{fl, new AstVarRef{fl, sizeOkVarp, VAccess::WRITE},
                                             newSolverCallp(genp)});
         return sizeOkVarp;
@@ -6338,9 +6353,12 @@ class RandomizeVisitor final : public VNVisitor {
             AstTaskRef* const setupTaskRefp = new AstTaskRef{fl, setupAllTaskp};
             randomizep->addStmtsp(setupTaskRefp->makeStmt());
 
+            VInsertionSet<AstVar*> pinnedArrays = sizeArrayVars;
+            addResizedArrays(nodep, pinnedArrays);
+            addFrozenSizePins(pinnedArrays, randomizep, genp, randModeVarp);
+
             if (!sizeArrayVars.empty()) {
-                AstVar* const sizeOkVarp
-                    = addSizeSolvep(randomizep, genp, randModeVarp, sizeArrayVars);
+                AstVar* const sizeOkVarp = addSizeSolvep(randomizep, genp);
                 if (AstTask* const resizeAllTaskp
                     = VN_AS(m_memberMap.findMember(nodep, "__Vresize_constrained_arrays"), Task)) {
                     randomizep->addStmtsp(
@@ -6902,6 +6920,9 @@ class RandomizeVisitor final : public VNVisitor {
         collectSizeConstrainedArrays(classp, allSizeArrays);
         const bool needsSizePhase = !allSizeArrays.empty();
         AstVar* const retVarp = VN_AS(randomizeFuncp->fvarp(), Var);
+        VInsertionSet<AstVar*> pinnedArrays = allSizeArrays;
+        addResizedArrays(classp, pinnedArrays);
+        addFrozenSizePins(pinnedArrays, randomizeFuncp, localGenp, randModeVarp);
 
         if (needsSizePhase) {
             // Call __VBasicRand and stash its result FIRST, as its own statement,
@@ -6926,8 +6947,7 @@ class RandomizeVisitor final : public VNVisitor {
             randomizeFuncp->addStmtsp(finalOkVarp);
 
             // First pass: solve to determine sizes
-            AstVar* const sizeOkVarp
-                = addSizeSolvep(randomizeFuncp, localGenp, randModeVarp, allSizeArrays);
+            AstVar* const sizeOkVarp = addSizeSolvep(randomizeFuncp, localGenp);
 
             // Resize constrained arrays before rebuilding constraints: both any
             // class-wide resize task (class-level size constraints) and this
