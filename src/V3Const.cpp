@@ -4214,6 +4214,21 @@ class ConstVisitor final : public VNVisitor {
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
         }
     }
+    void visit(AstCvtPackedToArray* nodep) override {
+        // A parameter value must become constant, so slice a constant into its elements, but a
+        // queue is not a constant
+        if (!m_params || !VN_IS(nodep->dtypep()->skipRefp(), UnpackArrayDType)) {
+            visit(static_cast<AstNode*>(nodep));
+            return;
+        }
+        iterateChildren(nodep);
+        if (!VN_IS(nodep->fromp(), Const)) return;  // Reported for the operand if required
+        AstNodeExpr* const newp
+            = V3Width::unpackBitStreamEdit(nodep->fromp()->unlinkFrBack(), nodep->dtypep());
+        nodep->replaceWith(newp);
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+        iterate(newp);
+    }
     void visit(AstConsArray* nodep) override { iterateChildren(nodep); }
     void visit(AstConsStruct* nodep) override { iterateChildren(nodep); }
     void visit(AstConsStructItem* nodep) override { iterateChildren(nodep); }
