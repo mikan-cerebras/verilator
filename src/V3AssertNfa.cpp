@@ -2996,6 +2996,7 @@ class AssertNfaVisitor final : public VNVisitor {
         const std::unordered_map<const AstVar*, AstVar*> localVarMap
             = V3AssertCommon::newSvaLocalVars(propyp, m_modp, m_propVarNames);
 
+        V3AssertCommon::checkSvaUnboundedActuals(propSpecp, portMap, funcrefp);
         std::vector<AstNodeExpr*> actualps;
         propSpecp->foreach([&](AstVarRef* refp) {
             const auto portIt = portMap.find(refp->varp());
@@ -3055,6 +3056,8 @@ class AssertNfaVisitor final : public VNVisitor {
         }
         const std::unordered_map<const AstVar*, AstVar*> localVarMap
             = V3AssertCommon::newSvaLocalVars(seqp, m_modp, m_propVarNames);
+        clonedp = VN_AS(V3AssertCommon::checkSvaUnboundedActuals(clonedp, portMap, funcrefp),
+                        NodeExpr);
         // A body that is only a formal argument is replaced as a whole
         if (const AstVarRef* const refp = VN_CAST(clonedp, VarRef)) {
             const auto it = portMap.find(refp->varp());
