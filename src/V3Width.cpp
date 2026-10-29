@@ -5194,7 +5194,7 @@ class WidthVisitor final : public VNVisitor {
             || nodep->name() == "rsort") {
             AstWith* withp = nullptr;
             if (nodep->name() == "sort" || nodep->name() == "rsort") {
-                withp = methodWithClause(nodep, false, true, nullptr, nodep->findUInt32DType(),
+                withp = methodWithClause(nodep, false, true, nullptr, nodep->findIntDType(),
                                          adtypep->subDTypep());
             }
             methodOkArguments(nodep, 0, 0);
@@ -5205,8 +5205,8 @@ class WidthVisitor final : public VNVisitor {
             newp->dtypeSetVoid();
         } else if (nodep->name() == "min" || nodep->name() == "max" || nodep->name() == "unique"
                    || nodep->name() == "unique_index") {
-            AstWith* const withp = methodWithClause(
-                nodep, false, true, nullptr, nodep->findUInt32DType(), adtypep->subDTypep());
+            AstWith* const withp = methodWithClause(nodep, false, true, nullptr,
+                                                    nodep->findIntDType(), adtypep->subDTypep());
             methodOkArguments(nodep, 0, 0);
             methodCallLValueRecurse(nodep, nodep->fromp(), VAccess::READ);
             newp = new AstCMethodHard{nodep->fileline(), nodep->fromp()->unlinkFrBack(),
@@ -5219,10 +5219,9 @@ class WidthVisitor final : public VNVisitor {
             }
             if (!nodep->firstAbovep()) newp->dtypeSetVoid();
         } else if (nodep->name() == "find" || nodep->name() == "find_first"
-                   || nodep->name() == "find_last" || nodep->name() == "find_index") {
-            AstWith* const withp
-                = methodWithClause(nodep, true, false, nodep->findBitDType(),
-                                   nodep->findUInt32DType(), adtypep->subDTypep());
+                   || nodep->name() == "find_last") {
+            AstWith* const withp = methodWithClause(nodep, true, false, nodep->findBitDType(),
+                                                    nodep->findIntDType(), adtypep->subDTypep());
             methodOkArguments(nodep, 0, 0);
             methodCallLValueRecurse(nodep, nodep->fromp(), VAccess::READ);
             newp = new AstCMethodHard{nodep->fileline(), nodep->fromp()->unlinkFrBack(),
@@ -5232,9 +5231,8 @@ class WidthVisitor final : public VNVisitor {
             if (!nodep->firstAbovep()) newp->dtypeSetVoid();
         } else if (nodep->name() == "find_index" || nodep->name() == "find_first_index"
                    || nodep->name() == "find_last_index") {
-            AstWith* const withp
-                = methodWithClause(nodep, true, false, nodep->findBitDType(),
-                                   nodep->findUInt32DType(), adtypep->subDTypep());
+            AstWith* const withp = methodWithClause(nodep, true, false, nodep->findBitDType(),
+                                                    nodep->findIntDType(), adtypep->subDTypep());
             methodOkArguments(nodep, 0, 0);
             methodCallLValueRecurse(nodep, nodep->fromp(), VAccess::READ);
             newp = new AstCMethodHard{nodep->fileline(), nodep->fromp()->unlinkFrBack(),
@@ -5245,9 +5243,8 @@ class WidthVisitor final : public VNVisitor {
         } else if (nodep->name() == "map") {
             // map() - IEEE 1800-2023 7.12.5
             // Returns a queue with same element count, each element is the with expression result
-            AstWith* const withp
-                = methodWithClause(nodep, true, false, adtypep->subDTypep(),
-                                   nodep->findUInt32DType(), adtypep->subDTypep());
+            AstWith* const withp = methodWithClause(nodep, true, false, adtypep->subDTypep(),
+                                                    nodep->findIntDType(), adtypep->subDTypep());
             methodOkArguments(nodep, 0, 0);
             methodCallLValueRecurse(nodep, nodep->fromp(), VAccess::READ);
             newp = new AstCMethodHard{nodep->fileline(), nodep->fromp()->unlinkFrBack(),
@@ -5287,9 +5284,8 @@ class WidthVisitor final : public VNVisitor {
         } else if (nodep->name() == "and" || nodep->name() == "or" || nodep->name() == "xor"
                    || nodep->name() == "sum" || nodep->name() == "product") {
             // All value return
-            AstWith* const withp
-                = methodWithClause(nodep, false, false, adtypep->subDTypep(),
-                                   nodep->findUInt32DType(), adtypep->subDTypep());
+            AstWith* const withp = methodWithClause(nodep, false, false, adtypep->subDTypep(),
+                                                    nodep->findIntDType(), adtypep->subDTypep());
             methodOkArguments(nodep, 0, 0);
             methodCallLValueRecurse(nodep, nodep->fromp(), VAccess::READ);
             newp = new AstCMethodHard{nodep->fileline(), nodep->fromp()->unlinkFrBack(),
@@ -5389,9 +5385,8 @@ class WidthVisitor final : public VNVisitor {
             newp->dtypeSetVoid();
         } else if (nodep->name() == "and" || nodep->name() == "or" || nodep->name() == "xor"
                    || nodep->name() == "sum" || nodep->name() == "product") {
-            AstWith* const withp
-                = methodWithClause(nodep, false, false, adtypep->subDTypep(),
-                                   nodep->findUInt32DType(), adtypep->subDTypep());
+            AstWith* const withp = methodWithClause(nodep, false, false, adtypep->subDTypep(),
+                                                    nodep->findIntDType(), adtypep->subDTypep());
             methodOkArguments(nodep, 0, 0);
             methodCallLValueRecurse(nodep, nodep->fromp(), VAccess::READ);
             newp = new AstCMethodHard{nodep->fileline(), nodep->fromp()->unlinkFrBack(),
@@ -5718,9 +5713,8 @@ class WidthVisitor final : public VNVisitor {
         }
 
         if (methodId) {
-            AstWith* const withp
-                = methodWithClause(nodep, false, false, adtypep->subDTypep(),
-                                   nodep->findUInt32DType(), adtypep->subDTypep());
+            AstWith* const withp = methodWithClause(nodep, false, false, adtypep->subDTypep(),
+                                                    nodep->findIntDType(), adtypep->subDTypep());
             methodOkArguments(nodep, 0, 0);
             if (withp) {
                 methodCallLValueRecurse(nodep, nodep->fromp(), VAccess::READ);
