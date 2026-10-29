@@ -320,6 +320,8 @@ private:
         }
         const std::unordered_map<const AstVar*, AstVar*> localVarMap
             = V3AssertCommon::newSvaLocalVars(seqp, m_modp, m_propVarNames);
+        clonedp = VN_AS(V3AssertCommon::checkSvaUnboundedActuals(clonedp, portMap, funcrefp),
+                        NodeExpr);
         // A body that is only a formal argument is replaced as a whole
         if (const AstVarRef* const refp = VN_CAST(clonedp, VarRef)) {
             const auto it = portMap.find(refp->varp());
@@ -375,6 +377,7 @@ private:
             = V3AssertCommon::newSvaLocalVars(propp, m_modp, m_propVarNames);
 
         // Single traversal: substitute ports and update local var references
+        V3AssertCommon::checkSvaUnboundedActuals(propExprp, portMap, funcrefp);
         propExprp->foreach([&](AstVarRef* refp) {
             const auto portIt = portMap.find(refp->varp());
             if (portIt != portMap.end()) {
