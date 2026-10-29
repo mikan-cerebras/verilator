@@ -3433,42 +3433,6 @@ class WidthVisitor final : public VNVisitor {
         }
         nodep->fromp(fromp);
     }
-    // Convert a packed vector to a value of a fixed-size bit-stream type
-    AstNodeExpr* unpackBitStream(AstNodeExpr* packedp, AstNodeDType* dtypep) {
-        if (!dtypep->containsUnpackedStruct()) {
-            if (!dtypep->skipRefp()->isAggregateType()) {
-                packedp->dtypeFrom(dtypep);
-                return packedp;
-            }
-            return new AstCvtPackedToArray{packedp->fileline(), packedp, dtypep};
-        }
-        // Each element or member takes the next slice, the first the most significant bits
-        FileLine* const flp = packedp->fileline();
-        int lsb = packedp->width();
-        const auto slicep = [&](AstNodeDType* subDtp) {
-            const int width = subDtp->widthStream();
-            lsb -= width;
-            return unpackBitStream(new AstSel{flp, packedp->cloneTreePure(false), lsb, width},
-                                   subDtp);
-        };
-        AstNodeExpr* newp = nullptr;
-        if (AstUnpackArrayDType* const adtypep = VN_CAST(dtypep->skipRefp(), UnpackArrayDType)) {
-            AstConsArray* const consp = new AstConsArray{flp, adtypep};
-            for (const int idx : adtypep->declRange().seqLeftToRight()) {
-                consp->valuep(idx - adtypep->lo(), slicep(adtypep->subDTypep()));
-            }
-            newp = consp;
-        } else {
-            AstStructDType* const sdtypep = VN_AS(dtypep->skipRefp(), StructDType);
-            AstConsStruct* const consp = new AstConsStruct{flp, sdtypep};
-            for (AstMemberDType* const itemp : sdtypep->memberspList()) {
-                consp->addItemsp(new AstConsStructItem{flp, itemp, slicep(itemp->dtypep())});
-            }
-            newp = consp;
-        }
-        VL_DO_DANGLING(pushDeletep(packedp), packedp);
-        return newp;
-    }
     void castSized(AstNode* nodep, AstNode* underp, int width) {
         const AstBasicDType* underDtp = VN_CAST(underp->dtypep(), BasicDType);
         if (!underDtp) underDtp = underp->dtypep()->basicp();
@@ -11639,6 +11603,50 @@ public:
     static bool lowerAsFixedAggregate(const AstNodeDType* const dtypep) {
         return dtypep->isStreamableFixedAggregate() && dtypep->containsUnpackedStruct();
     }
+    // Convert a packed vector to a value of a fixed-size bit-stream type
+    AstNodeExpr* unpackBitStream(AstNodeExpr* packedp, AstNodeDType* dtypep) {
+        if (!dtypep->skipRefp()->isAggregateType()) {
+            packedp->dtypeFrom(dtypep);
+            return packedp;
+        }
+        // A constant is sliced, so the elements fold to constants, as a parameter value must
+        if (!dtypep->containsUnpackedStruct() && !VN_IS(packedp, Const)) {
+            return new AstCvtPackedToArray{packedp->fileline(), packedp, dtypep};
+        }
+        // Each element or member takes the next slice, the first the most significant bits
+        FileLine* const flp = packedp->fileline();
+        int lsb = packedp->width();
+        const auto slicep = [&](AstNodeDType* subDtp) {
+            const int width = subDtp->widthStream();
+            lsb -= width;
+            AstNodeExpr* selp;
+            if (const AstConst* const constp = VN_CAST(packedp, Const)) {
+                V3Number num{packedp, width};
+                num.opSel(constp->num(), lsb + width - 1, lsb);
+                selp = new AstConst{flp, num};
+            } else {
+                selp = new AstSel{flp, packedp->cloneTreePure(false), lsb, width};
+            }
+            return unpackBitStream(selp, subDtp);
+        };
+        AstNodeExpr* newp = nullptr;
+        if (AstUnpackArrayDType* const adtypep = VN_CAST(dtypep->skipRefp(), UnpackArrayDType)) {
+            AstConsArray* const consp = new AstConsArray{flp, adtypep};
+            for (const int idx : adtypep->declRange().seqLeftToRight()) {
+                consp->valuep(idx - adtypep->lo(), slicep(adtypep->subDTypep()));
+            }
+            newp = consp;
+        } else {
+            AstStructDType* const sdtypep = VN_AS(dtypep->skipRefp(), StructDType);
+            AstConsStruct* const consp = new AstConsStruct{flp, sdtypep};
+            for (AstMemberDType* const itemp : sdtypep->memberspList()) {
+                consp->addItemsp(new AstConsStructItem{flp, itemp, slicep(itemp->dtypep())});
+            }
+            newp = consp;
+        }
+        VL_DO_DANGLING(pushDeletep(packedp), packedp);
+        return newp;
+    }
     void streamAssignLower(AstNodeAssign* nodep) {
         AstNodeDType* lhsDTypep = nodep->lhsp()->dtypep();
         // Check width of stream and wrap if needed
@@ -11736,6 +11744,11 @@ void V3Width::streamAssignLowerEdit(AstNodeAssign* nodep) {
     UINFO(4, __FUNCTION__ << ": " << nodep);
     WidthVisitor visitor{false, false};
     visitor.streamAssignLower(nodep);
+}
+
+AstNodeExpr* V3Width::unpackBitStreamEdit(AstNodeExpr* packedp, AstNodeDType* dtypep) {
+    WidthVisitor visitor{false, false};
+    return visitor.unpackBitStream(packedp, dtypep);
 }
 
 //! Single node parameter propagation for generate blocks.
