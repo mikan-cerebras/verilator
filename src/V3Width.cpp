@@ -7188,11 +7188,12 @@ class WidthVisitor final : public VNVisitor {
                                        << warnDTypes(nodep, lhsDtp, rhsDtp));
                     }
                 }
-                checkUnpackedArrayAssignmentCompatible<AstNodeVarRef, AstNodeVarRef>(
-                    nodep, VN_CAST(nodep->lhsp(), NodeVarRef), VN_CAST(nodep->rhsp(), NodeVarRef));
-                // Variable references were checked above, this catches e.g. method call results
+                checkUnpackedArrayAssignmentCompatible(nodep, nodep->lhsp(), nodep->rhsp());
+                // Declared types were checked above, this catches e.g. method call results, but
+                // a stream target unpacks the value
                 if (lhsDtp->isIntegralOrPacked() && rhsDtp->isAggregateType()
-                    && !VN_IS(nodep->rhsp(), NodeVarRef)) {
+                    && !VN_IS(nodep->lhsp(), NodeStream)
+                    && !(hasDeclaredDType(nodep->lhsp()) && hasDeclaredDType(nodep->rhsp()))) {
                     nodep->v3error("Illegal assignment betwen unpacked aggregate and "
                                    "integral type (IEEE 1800-2023 7.6)"
                                    << warnDTypes(nodep, lhsDtp, rhsDtp));
@@ -7888,8 +7889,8 @@ class WidthVisitor final : public VNVisitor {
                     UINFO(1, "    Related lo: " << modDTypep);
                     UINFO(1, "    Related hi: " << conDTypep);
                 } else {
-                    checkUnpackedArrayAssignmentCompatible<AstVar, AstNodeVarRef>(
-                        nodep, nodep->modVarp(), VN_CAST(nodep->exprp(), NodeVarRef));
+                    checkUnpackedArrayAssignmentCompatible(nodep, nodep->modVarp(),
+                                                           nodep->exprp());
                     UINFO(1, "    Related lo: " << modDTypep);
                     UINFO(1, "    Related hi: " << conDTypep);
                 }
@@ -9836,19 +9837,18 @@ class WidthVisitor final : public VNVisitor {
         }
         return true;
     }
-    // Checks whether two types are assignment-compatible according to IEEE 1800-2023 7.6
-    // Currently, this function only supports variables, which are of following types:
-    // - Fixed-size unpacked array
-    // - Dynamic unpacked array
-    // - Associative array
-    template <typename T, typename N>
-    void checkUnpackedArrayAssignmentCompatible(const AstNode* nodep, const T* const lhsRefp,
-                                                const N* const rhsRefp) {
-        static_assert(
-            (std::is_same<T, AstVar>::value || std::is_same<T, AstNodeVarRef>::value)
-                && (std::is_same<N, AstVar>::value || std::is_same<N, AstNodeVarRef>::value),
-            "Unsupported types provided.");
-        if (!lhsRefp || !rhsRefp) return;
+    // Whether an operand has the data type of a declaration
+    static bool hasDeclaredDType(const AstNode* nodep) {
+        // Unlike e.g. built-in method results, whose types may be approximate, or streams and
+        // string literals, which may convert implicitly
+        return VN_IS(nodep, Var) || VN_IS(nodep, NodeVarRef) || VN_IS(nodep, MemberSel)
+               || VN_IS(nodep, StructSel) || VN_IS(nodep, NodeSel) || VN_IS(nodep, SliceSel)
+               || VN_IS(nodep, NodeFTaskRef);
+    }
+    // Check that unpacked array types are assignment compatible (IEEE 1800-2023 7.6)
+    void checkUnpackedArrayAssignmentCompatible(const AstNode* nodep, const AstNode* lhsp,
+                                                const AstNode* rhsp) {
+        if (!hasDeclaredDType(lhsp) || !hasDeclaredDType(rhsp)) return;
         std::string lhsName;
         std::string rhsName;
         if (VN_IS(nodep, Pin)) {
@@ -9859,8 +9859,8 @@ class WidthVisitor final : public VNVisitor {
             rhsName = std::string{"Right-hand"};
         }
 
-        const AstNodeDType* const lhsDtp = lhsRefp->dtypep()->skipRefp();
-        const AstNodeDType* const rhsDtp = rhsRefp->dtypep()->skipRefp();
+        const AstNodeDType* const lhsDtp = lhsp->dtypep()->skipRefp();
+        const AstNodeDType* const rhsDtp = rhsp->dtypep()->skipRefp();
         const bool isLhsAggregate = lhsDtp->isAggregateType();
         const bool isRhsAggregate = rhsDtp->isAggregateType();
         if (!isLhsAggregate && !isRhsAggregate) return;

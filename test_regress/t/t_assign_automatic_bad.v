@@ -33,7 +33,7 @@ module t (
   int bad_assoc[int];
   Cls clist[1];
 
-  assign bad_dyn5[0] = empty_dyn;  // <--- Error: continuous dynarray element
+  assign bad_dyn5[0] = empty_dyn[0];  // <--- Error: continuous dynarray element
   assign bad_dyn5 = empty_dyn;  // <--- OK: continuous dynarray assignment, not to its element
   assign c.m_bad1 = 2;  // <--- Error: continuous class non-static
   // Only one simulator fails on this, probably not legal
