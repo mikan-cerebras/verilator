@@ -50,7 +50,7 @@
 %Error: t/t_queue_method_bad.v:33:8: Illegal assignment betwen unpacked aggregate and integral type (IEEE 1800-2023 7.6)
                                    : ... note: In instance 't'
                                    : ... Left-hand data type: 'int'
-                                   : ... Right-hand data type: 'IData$[$]'
+                                   : ... Right-hand data type: 'int$[$]'
    33 |     it = q.find_first_index(x) with (x == 2);   
       |        ^
 %Error: t/t_queue_method_bad.v:34:7: Illegal assignment betwen unpacked aggregate and integral type (IEEE 1800-2023 7.6)
