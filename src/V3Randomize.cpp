@@ -4040,6 +4040,7 @@ class RandomizeVisitor final : public VNVisitor {
     int m_distNum = 0;  // Dist bucket variable counter within a module for var naming
     std::map<std::string, AstCDType*> m_randcDtypes;  // RandC data type deduplication
     AstConstraint* m_constraintp = nullptr;  // Current constraint
+    std::set<AstVar*> m_constraintSizedArrays;  // Arrays whose size m_constraintp constrains
     std::set<std::string> m_writtenVars;  // Track write_var calls per class to avoid duplicates
     std::map<AstClass*, VInsertionSet<AstVar*>> m_sizeConstrainedArrays;  // Per-class arrays
     std::map<AstClass*, AstVar*>
@@ -5004,11 +5005,9 @@ class RandomizeVisitor final : public VNVisitor {
                              access};
     }
     // Get or create a size variable for a constrained dynamic/queue/assoc array.
-    // Returns the size variable. Sets wasCreated=true if a new variable was made.
     AstVar* createOrGetSizeVar(AstClass* const classp, AstVar* const arrVarp, FileLine* const fl,
-                               AstNodeDType* const signed32DTypep, bool& wasCreated) {
+                               AstNodeDType* const signed32DTypep) {
         AstVar* sizeVarp = VN_CAST(arrVarp->user4p(), Var);
-        wasCreated = false;
         if (!sizeVarp) {
             sizeVarp = new AstVar{fl, VVarType::MEMBER, "__V" + arrVarp->name() + "_size",
                                   signed32DTypep};
@@ -5016,7 +5015,6 @@ class RandomizeVisitor final : public VNVisitor {
             m_memberMap.insert(classp, sizeVarp);
             sizeVarp->user2p(classp);
             arrVarp->user4p(sizeVarp);
-            wasCreated = true;
         }
         return sizeVarp;
     }
@@ -6237,7 +6235,8 @@ class RandomizeVisitor final : public VNVisitor {
                     AstTaskRef* const resizeTaskRefp
                         = new AstTaskRef{constrp->fileline(), resizeTaskp};
                     resizeTaskRefp->classOrPackagep(classp);
-                    resizeAllTaskp->addStmtsp(resizeTaskRefp->makeStmt());
+                    resizeAllTaskp->addStmtsp(
+                        wrapIfConstraintMode(nodep, constrp, resizeTaskRefp->makeStmt()));
                 }
 
                 if (constrp->itemsp()) expandUniqueElementList(constrp->itemsp());
@@ -6813,10 +6812,10 @@ class RandomizeVisitor final : public VNVisitor {
                 // Do not randomize associative array size (IEEE 18.4)
                 if (VN_IS(arrVarp->dtypep()->skipRefp(), AssocArrayDType)) continue;
                 FileLine* const fl = methodp->fileline();
-                bool wasCreated = false;
+                const bool wasCreated = !arrVarp->user4p();
                 AstClass* const varClassp = VN_AS(arrVarp->user2p(), Class);
-                AstVar* const sizeVarp = createOrGetSizeVar(varClassp, arrVarp, fl,
-                                                            methodp->findIntDType(), wasCreated);
+                AstVar* const sizeVarp
+                    = createOrGetSizeVar(varClassp, arrVarp, fl, methodp->findIntDType());
                 // arrVarp and sizeVarp may live in a base class when the
                 // array is inherited; route VarRefs through their declaring
                 // class so V3Scope can resolve them.
@@ -7101,6 +7100,7 @@ class RandomizeVisitor final : public VNVisitor {
     }
     void visit(AstConstraint* nodep) override {
         VL_RESTORER(m_constraintp);
+        VL_RESTORER_CLEAR(m_constraintSizedArrays);
         m_constraintp = nodep;
         iterateChildren(nodep);
     }
@@ -7117,10 +7117,11 @@ class RandomizeVisitor final : public VNVisitor {
                 return;
             }
             AstVar* const queueVarp = queueVarRefp->varp();
-            bool wasCreated = false;
             AstVar* const sizeVarp
-                = createOrGetSizeVar(classp, queueVarp, fl, nodep->findIntDType(), wasCreated);
-            if (wasCreated) {
+                = createOrGetSizeVar(classp, queueVarp, fl, nodep->findIntDType());
+            // Each constraint sizing the array resizes it and guards its size, so
+            // constraint_mode(0) leaves the array unchanged only when all are off
+            if (m_constraintSizedArrays.insert(queueVarp).second) {
                 // Associative arrays have no resize(); only generate resize
                 // for dynamic arrays and queues
                 if (!VN_IS(queueVarp->dtypep()->skipRefp(), AssocArrayDType)) {
