@@ -7176,7 +7176,7 @@ class WidthVisitor final : public VNVisitor {
                 const bool lhsIsUnpackArray = lhsDtp->isNonPackedArray();
                 const bool rhsIsUnpackArray = rhsDtp->isNonPackedArray();
                 if (lhsIsUnpackArray && rhsIsUnpackArray) {
-                    if (lhsDtp->isFourstate() != rhsDtp->isFourstate()) {
+                    if (lhsDtp->isFourstateElement() != rhsDtp->isFourstateElement()) {
                         nodep->v3error("Assignment between 2-state and 4-state types requires "
                                        "equivalent element types (IEEE 1800-2023 6.22.2, 7.6)"
                                        << warnDTypes(nodep, lhsDtp, rhsDtp));
