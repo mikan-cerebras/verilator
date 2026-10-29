@@ -1366,7 +1366,7 @@ package Vt_debug_emitv_std;
             string s;
             begin : label6
                 get_randstate = /*CRESET*/;
-                s = string'($c(0));
+                s = (string'($c(0)));
                 $c(s = m_process->randstate(););
                 get_randstate = s;
                 disable label6;
