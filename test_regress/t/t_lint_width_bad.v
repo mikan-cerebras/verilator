@@ -38,6 +38,7 @@ module t;
   initial for (a = 0; a >= THREE; ++a) $display(a);
 
   initial if (THREE) $stop;
+  initial @(a iff THREE) $stop;
 
 endmodule
 
