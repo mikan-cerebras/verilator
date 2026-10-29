@@ -341,15 +341,12 @@ private:
         seqp->isReferenced(false);
     }
     AstPropSpec* clonePropertyBody(AstFuncRef* funcrefp, const AstProperty* propp) {
-        AstPropSpec* propExprp = getPropertyExprp(propp);
-        // Substitute inner property call before copying in order to not doing the same for
-        // each call of outer property call.
+        // Clone, as the property may be instanced multiple times with different arguments, in
+        // different modules, or through different hierarchical paths. Substitute an inner
+        // property instance in the clone, after the outer path is applied to it.
+        AstPropSpec* propExprp = getPropertyExprp(propp)->cloneTree(false);
+        V3AssertCommon::relinkSvaInstanceBody(propExprp, funcrefp);
         propExprp = substitutePropertyCall(propExprp);
-        // Clone subtree after substitution. It is needed, because property might be called
-        // multiple times with different arguments.
-        propExprp
-            = VN_AS(V3AssertCommon::relinkSvaInstanceBody(propExprp->cloneTree(false), funcrefp),
-                    PropSpec);
         // Build substitution maps for formal arguments and property-local
         // variables, then perform a single foreach to apply all replacements.
         // Map port vars to their actual argument expressions
@@ -413,8 +410,9 @@ private:
                     propExprp->sensesp(sensesp);
                 }
 
-                // Now substitute property reference with property body
-                nodep->replaceWith(propExprp);
+                // Now substitute property reference with property body; a cloned body being
+                // instanced is not linked yet
+                if (nodep->backp()) nodep->replaceWith(propExprp);
                 VL_DO_DANGLING(pushDeletep(nodep), nodep);
                 return propExprp;
             }
