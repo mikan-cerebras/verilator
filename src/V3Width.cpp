@@ -3298,13 +3298,19 @@ class WidthVisitor final : public VNVisitor {
             AstNodeDType* const toDtp = nodep->dtypep()->skipRefToEnump();
             const bool bitStream = (toDtp->isAggregateType()
                                     || nodep->fromp()->dtypep()->skipRefp()->isAggregateType())
-                                   && isFixedBitStream(toDtp)
+                                   && (isFixedBitStream(toDtp) || toDtp->isString())
                                    && isFixedBitStream(nodep->fromp()->dtypep());
             if (bitStream && !toDtp->matchingDType(nodep->fromp()->dtypep())) {
                 castBitStream(nodep, toDtp);
             }
             AstNodeDType* const fromDtp = nodep->fromp()->dtypep()->skipRefToEnump();
-            const auto castable = AstNode::computeCastable(toDtp, fromDtp, nodep->fromp());
+            VCastable castable = AstNode::computeCastable(toDtp, fromDtp, nodep->fromp());
+            // A string and a real are neither assignment compatible nor both bit-stream types
+            // (IEEE 1800-2023 6.24.1, 6.24.3), and a class handle does not convert to a string
+            if ((toDtp->isString() && (fromDtp->isDouble() || VN_IS(fromDtp, ClassRefDType)))
+                || (toDtp->isDouble() && fromDtp->isString())) {
+                castable = VCastable::INCOMPATIBLE;
+            }
             bool bad = false;
             if (castable == VCastable::UNSUPPORTED) {
                 nodep->v3warn(E_UNSUPPORTED, "Unsupported: static cast to "
@@ -3339,6 +3345,11 @@ class WidthVisitor final : public VNVisitor {
             } else if (AstBasicDType* const basicp = toDtp->basicp()) {
                 if (!basicp->isString() && fromDtp->isString()) {
                     newp = new AstNToI{nodep->fileline(), nodep->fromp()->unlinkFrBack(), toDtp};
+                } else if (basicp->isString()) {
+                    if (!fromDtp->isString()) {
+                        newp = new AstCvtPackString{nodep->fileline(),
+                                                    nodep->fromp()->unlinkFrBack()};
+                    }
                 } else if (!basicp->isDouble() && !fromDtp->isDouble()) {
                     AstNodeDType* const origDTypep = nodep->dtypep();
                     if (!VN_IS(fromDtp, StreamDType)) {
@@ -3472,8 +3483,9 @@ class WidthVisitor final : public VNVisitor {
             capturep = newCapture(fromp, fromp->dtypep(), m_castTempNames);
             fromp = capturep->resultp()->unlinkFrBack();
         }
-        const int width = toDtp->widthStream();
         const int fromWidth = fromp->dtypep()->widthStream();
+        // A string is dynamically sized, so takes all the bits
+        const int width = toDtp->isString() ? fromWidth : toDtp->widthStream();
         if (fromWidth != width) {
             nodep->v3error("Bit-stream cast to "
                            << toDtp->prettyDTypeNameQ() << " (" << width << " bits) from "
