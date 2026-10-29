@@ -4041,6 +4041,7 @@ class RandomizeVisitor final : public VNVisitor {
     std::map<std::string, AstCDType*> m_randcDtypes;  // RandC data type deduplication
     AstConstraint* m_constraintp = nullptr;  // Current constraint
     std::set<AstVar*> m_constraintSizedArrays;  // Arrays whose size m_constraintp constrains
+    std::unordered_set<const AstClass*> m_visitedClasses;  // Classes visited so far
     std::set<std::string> m_writtenVars;  // Track write_var calls per class to avoid duplicates
     std::map<AstClass*, VInsertionSet<AstVar*>> m_sizeConstrainedArrays;  // Per-class arrays
     std::map<AstClass*, AstVar*>
@@ -6214,6 +6215,12 @@ class RandomizeVisitor final : public VNVisitor {
         iterateChildren(nodep);
     }
     void visit(AstClass* nodep) override {
+        m_visitedClasses.insert(nodep);
+        // The class lowers the constraints of its base classes with its own, so their
+        // array size methods must already be replaced by size variables
+        if (nodep->extendsp() && !m_visitedClasses.count(nodep->extendsp()->classp())) {
+            iterate(nodep->extendsp()->classp());
+        }
         VL_RESTORER(m_modp);
         VL_RESTORER(m_randCaseNum);
         VL_RESTORER(m_distNum);
