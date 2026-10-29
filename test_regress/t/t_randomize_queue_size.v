@@ -53,7 +53,39 @@ class Baz;
   }
 endclass
 
+class DynSized;
+  rand int d[];
+  rand bit [2:0] x;
+  constraint c { d.size() == 4; }
+endclass
+
 module t;
+  // randomize() with on objects never plainly randomized applies the class size constraints
+  initial begin
+    automatic Foo foo = new;
+    automatic Foo foo_elem = new;
+    automatic Bar bar = new;
+    automatic DynSized dyn = new;
+    automatic int nonzero = 0;
+    if (foo.randomize() with { q.size() > 0; } != 1) $stop;
+    if (foo.q.size() != 15) $stop;
+    if (foo.q2.size() != 10) $stop;
+    // Element constraint only in the with-block
+    if (foo_elem.randomize() with { foreach (q[i]) q[i] inside {[1:4]}; } != 1) $stop;
+    if (foo_elem.q.size() != 15) $stop;
+    foreach (foo_elem.q[i]) if (foo_elem.q[i] < 1 || foo_elem.q[i] > 4) $stop;
+    if (dyn.randomize() with { x == 5; } != 1) $stop;
+    if (dyn.d.size() != 4 || dyn.x != 5) $stop;
+    repeat (10) begin
+      if (bar.randomize() with { min_size == 5; } != 1) $stop;
+      if (bar.min_size != 5) $stop;
+      if (bar.q.size() < 5 || bar.q.size() > 9) $stop;
+      if (bar.q2.size() > 6) $stop;
+      foreach (bar.q[i]) if (bar.q[i] != 0) nonzero++;
+    end
+    if (nonzero < 40) $stop;
+  end
+
   initial begin
     automatic Foo foo = new;
     automatic Bar bar = new;
