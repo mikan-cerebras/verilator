@@ -54,4 +54,18 @@ module t;
     cq = {cq, ou};
     cq = {cq, ob};
   end
+
+  initial begin
+    Cls c;
+    Cls cq[$];
+    int iq[$];
+    int id[];
+    // Class handle and integral items or arrays, so neither an element nor an array of them
+    iq = {iq, c};
+    id = {c, id};
+    iq = '{c};
+    cq = {cq, 5};
+    iq = {iq, cq};
+    cq = {cq, iq};
+  end
 endmodule

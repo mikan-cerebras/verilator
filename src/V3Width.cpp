@@ -6611,6 +6611,22 @@ class WidthVisitor final : public VNVisitor {
         if (const AstConsQueue* const queuep = VN_CAST(nodep, ConsQueue)) return queuep->sizep();
         return false;
     }
+    // Whether a value of type 'fromDtp' is never assignable to type 'toDtp'
+    static bool isNeverAssignable(const AstNodeDType* toDtp, const AstNodeDType* fromDtp) {
+        // computeCastable does not decide a class handle against a type that is not a class
+        // (e.g. for a bit-stream cast), but a class handle is assignable only to a class handle,
+        // and only a class handle or null is assignable to one. An array 'toDtp' is left to
+        // computeCastable, as 'fromDtp' may be the element type of an array assignable to it,
+        // and so is an empty queue '{}', which is reported elsewhere.
+        const AstNodeDType* const toSkipp = toDtp->skipRefp();
+        const AstNodeDType* const fromSkipp = fromDtp->skipRefp();
+        if (VN_IS(toSkipp, ClassRefDType) != VN_IS(fromSkipp, ClassRefDType)
+            && !toSkipp->isNonPackedArray() && !VN_IS(fromSkipp, EmptyQueueDType)) {
+            const AstBasicDType* const fromBasicp = VN_CAST(fromSkipp, BasicDType);
+            return !(fromBasicp && fromBasicp->keyword() == VBasicDTypeKwd::NULLTYPE);
+        }
+        return AstNode::computeCastable(toDtp, fromDtp, nullptr) == VCastable::INCOMPATIBLE;
+    }
     // Add 'valuep' to a dynamic array or queue constructor: as one element, or as an array whose
     // elements are spliced in. A constructor being spliced (e.g. a concatenation's left operand)
     // has its items moved over, or added one by one to convert them if its kind or element type
@@ -6625,10 +6641,8 @@ class WidthVisitor final : public VNVisitor {
         // (IEEE 1800-2023 10.10)
         const bool isElement = AstNode::computeCastable(elemDtp, valueDtp, nullptr).isAssignable();
         if (!isElement
-            && AstNode::computeCastable(
-                   elemDtp, valueDtp->isNonPackedArray() ? valueDtp->subDTypep() : valueDtp,
-                   nullptr)
-                   == VCastable::INCOMPATIBLE) {
+            && isNeverAssignable(elemDtp, valueDtp->isNonPackedArray() ? valueDtp->subDTypep()
+                                                                       : valueDtp)) {
             valuep->v3error("Unpacked array concatenation item is neither an element nor"
                             " an array of elements of its target (IEEE 1800-2023 10.10)"
                             << warnDTypes(valuep, elemDtp, valuep->dtypep(), "Element", "Item"));
