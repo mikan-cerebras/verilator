@@ -3335,6 +3335,10 @@ class WidthVisitor final : public VNVisitor {
                        && (VN_IS(toDtp, DynArrayDType) || VN_IS(toDtp, QueueDType))) {
                 newp = new AstCvtUnpackToQueue{nodep->fileline(), nodep->fromp()->unlinkFrBack(),
                                                toDtp};
+            } else if (VN_IS(toDtp, QueueDType)
+                       && !toDtp->subDTypep()->skipRefp()->isIntegralOrPacked()) {
+                // Can just remove cast, as only an equivalent queue or dynamic array is
+                // compatible here
             } else if (VN_IS(toDtp, QueueDType)) {
                 if (VN_IS(fromDtp, BasicDType)) {
                     newp = new AstCvtPackedToArray{nodep->fileline(),
