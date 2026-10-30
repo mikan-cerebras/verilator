@@ -195,7 +195,7 @@ class AwaitVisitor final : public VNVisitor {
 
     // STATE
     bool m_inProcess = false;  // Are we in a process?
-    bool m_gatherVars = false;  // Should we gather vars in m_writtenBySuspendable?
+    bool m_gatherVars = false;  // Should we gather written variables?
     AstScope* const m_scopeTopp;  // Scope at the top
     LogicByScope& m_lbs;  // Timing resume actives
     AstNodeStmt*& m_postUpdatesr;  // Post updates for the trigger eval function
@@ -203,38 +203,18 @@ class AwaitVisitor final : public VNVisitor {
     std::map<const AstVarScope*, std::set<AstSenTree*>>& m_externalDomains;
     std::unique_ptr<V3ClassGraph>
         m_classGraphp;  // class graph to get possibly called functions from a virtual call
-    std::set<AstSenTree*> m_processDomains;  // Sentrees from the current process
-    // Variables written by suspendable processes
-    std::set<AstVarScope*> m_writtenBySuspendable;
+    // What a process, or a function visited with a given value of m_gatherVars, adds directly
     struct CFuncCache final {
-        std::set<AstSenTree*> m_processDomains;  // What shall be added to m_processDomains
-        std::set<AstVarScope*>
-            m_writtenBySuspendable;  // What shall be added to m_writtenBySuspendable
-        std::set<AstCFunc*> m_includes;  // CFuncs whose CFuncCache shall be included into this
-        // m_includes does not need to keep bool with m_gatherVars to know which cache shall be
-        // used since:
-        //  Only possible transition in a graph is from `!m_gatherVars` to `m_gatherVars`
-        //  (in visit(AstFork*) there is a only possible transition, visit(AstNodeProcedure*) is
-        //  not considered since it does not occur during a graph traversal)
-        //  therefore, if change of state occurs it is certain that the first node after transition
-        //  won't be in visiting state
-        //  therefore, every node in a m_includes shall take value of m_gatherVars under which
-        //  current CFuncCache is
-        enum State : uint8_t {
-            UNINITIALIZED = 0,  // Not initialized members are empty
-            VISITING,  // Visiting - needed for breaking recursion
-            INITIALIZED,  // Members contains correct values
-        } m_state  // Current state of Cache
-            = UNINITIALIZED;
+        std::set<AstSenTree*> m_processDomains;  // Sentrees awaited
+        std::set<AstVarScope*> m_writtenBySuspendable;  // Variables written
+        std::set<const CFuncCache*> m_callees;  // Caches of the functions called
+        bool m_visited = false;  // Whether the members are set
     };
-    std::vector<const AstCFunc*> m_callStack;  // Current callstack of AstCFuncs
-    // Caches how visiting the function with given value of m_gatherVars changes
-    // m_processDomains and m_writtenBySuspendable - only accessed from visit(AstCFunc* nodep)
+    CFuncCache* m_cachep = nullptr;  // Cache of the current process or called function
+    // Caches of called functions, by value of m_gatherVars
     AstUser1Allocator<AstCFunc, std::array<CFuncCache, 2>> m_cfuncsCache;
-    // Caches already added to m_processDomains and m_writtenBySuspendable
-    std::unordered_set<const CFuncCache*> m_addedCaches;
-    // Called functions of virtual calls (with m_gatherVars) already visited for the current sets
-    std::set<std::pair<const AstCFunc*, bool>> m_virtualCalls;
+    // Caches of virtual calls, calling each possible function, by called function and m_gatherVars
+    std::map<std::pair<const AstCFunc*, bool>, CFuncCache> m_virtualCallsCache;
     // Count uses of not inlined writes to signals in suspendables
     VDouble0 m_notInlinedWritesInSuspendableUsage;
 
@@ -252,20 +232,25 @@ class AwaitVisitor final : public VNVisitor {
             resumep->addPinsp(pinsp->cloneTree(false));
         }
     }
-    // Add the cached values of a function and of the functions it includes to the current sets
-    void addCFuncCachedValues(const AstCFunc* const cfuncp) {
-        CFuncCache& value = m_cfuncsCache(cfuncp)[static_cast<size_t>(m_gatherVars)];
-        // Add each cache once per set of gathered values, not once per call site. A cache reached
-        // here is either initialized and final, or of a function on m_callStack, which stays
-        // empty until the current sets are done
-        if (!m_addedCaches.insert(&value).second) return;
-        const size_t initialSize = m_writtenBySuspendable.size();
-        m_writtenBySuspendable.insert(value.m_writtenBySuspendable.begin(),
-                                      value.m_writtenBySuspendable.end());
-        m_notInlinedWritesInSuspendableUsage += m_writtenBySuspendable.size() - initialSize;
-        m_processDomains.insert(value.m_processDomains.begin(), value.m_processDomains.end());
-        for (const AstCFunc* const includedp : value.m_includes) {
-            addCFuncCachedValues(includedp);
+    // Add the values of every function the process calls, directly or not, to the process cache
+    void addCalledValues(CFuncCache& procCache) {
+        // Walk the call graph instead of caching the values reachable from each function, which
+        // takes memory of the number of functions times the number of variables they reach
+        std::unordered_set<const CFuncCache*> visited;
+        std::vector<const CFuncCache*> stack{procCache.m_callees.begin(),
+                                             procCache.m_callees.end()};
+        while (!stack.empty()) {
+            const CFuncCache* const cachep = stack.back();
+            stack.pop_back();
+            if (!visited.insert(cachep).second) continue;
+            const size_t initialSize = procCache.m_writtenBySuspendable.size();
+            procCache.m_writtenBySuspendable.insert(cachep->m_writtenBySuspendable.begin(),
+                                                    cachep->m_writtenBySuspendable.end());
+            m_notInlinedWritesInSuspendableUsage
+                += procCache.m_writtenBySuspendable.size() - initialSize;
+            procCache.m_processDomains.insert(cachep->m_processDomains.begin(),
+                                              cachep->m_processDomains.end());
+            stack.insert(stack.end(), cachep->m_callees.begin(), cachep->m_callees.end());
         }
     }
     // Create an active with a timing scheduler resume() call
@@ -296,57 +281,46 @@ class AwaitVisitor final : public VNVisitor {
         activep->addStmtsp(resumep->makeStmt());
         m_lbs.add(m_scopeTopp, activep);
     }
-    // Visit AstCFunc from a AstNodeCCall - this function is rather expensive to call therefore, it
-    // only shall be called when necessary
-    void visitCalledCFunc(AstCFunc* const nodep) {
-        const size_t cacheKey = static_cast<size_t>(m_gatherVars);
-        CFuncCache& value = m_cfuncsCache(nodep)[cacheKey];
-        switch (value.m_state) {
-        case CFuncCache::UNINITIALIZED: {
-            // Save current state
-            VL_RESTORER_CLEAR(m_processDomains);
-            VL_RESTORER_CLEAR(m_writtenBySuspendable);
-            VL_RESTORER_CLEAR(m_addedCaches);
-            VL_RESTORER_CLEAR(m_virtualCalls);
-
-            // Visit
-            value.m_state = CFuncCache::VISITING;
-            m_callStack.push_back(nodep);
+    // Return the cache of a called function, visiting the function the first time
+    const CFuncCache* calledCache(AstCFunc* const nodep) {
+        CFuncCache& cache = m_cfuncsCache(nodep)[static_cast<size_t>(m_gatherVars)];
+        if (!cache.m_visited) {
+            // Mark before visiting, so recursive calls only link to it
+            cache.m_visited = true;
+            VL_RESTORER(m_cachep);
+            m_cachep = &cache;
             iterateChildren(nodep);
-            m_callStack.pop_back();
-            value.m_state = CFuncCache::INITIALIZED;
-
-            // Save a cache
-            std::swap(m_processDomains, value.m_processDomains);
-            std::swap(m_writtenBySuspendable, value.m_writtenBySuspendable);
-        } break;
-        case CFuncCache::VISITING: {
-            for (size_t i = m_callStack.size() - 1; m_callStack.at(i) != nodep; --i) {
-                m_cfuncsCache(m_callStack[i])[cacheKey].m_includes.insert(nodep);
-            }
-            return;  // Break recursion
         }
-        case CFuncCache::INITIALIZED: break;
+        return &cache;
+    }
+    // Return the cache of a call, visiting the called functions the first time
+    const CFuncCache* callCache(AstNodeCCall* const nodep) {
+        const auto& cfuncps = m_classGraphp->getCallPossibleCFuncs(nodep);
+        if (cfuncps.empty()) return calledCache(nodep->funcp());
+        // The possible functions depend only on the called function, so share their links
+        CFuncCache& cache = m_virtualCallsCache[{nodep->funcp(), m_gatherVars}];
+        if (!cache.m_visited) {
+            cache.m_visited = true;
+            for (AstCFunc* const cfuncp : cfuncps) cache.m_callees.insert(calledCache(cfuncp));
         }
-        addCFuncCachedValues(nodep);
+        return &cache;
     }
 
     // VISITORS
     void visit(AstNodeProcedure* const nodep) override {
-        UASSERT_OBJ(!m_inProcess && !m_gatherVars && m_processDomains.empty()
-                        && m_writtenBySuspendable.empty(),
-                    nodep, "Process in process?");
+        UASSERT_OBJ(!m_inProcess && !m_gatherVars && !m_cachep, nodep, "Process in process?");
+        CFuncCache procCache;
+        m_cachep = &procCache;
         m_inProcess = true;
         m_gatherVars = nodep->isSuspendable();  // Only gather vars in a suspendable
         iterateChildren(nodep);
-        for (AstVarScope* const vscp : m_writtenBySuspendable) {
-            m_externalDomains[vscp].insert(m_processDomains.begin(), m_processDomains.end());
+        addCalledValues(procCache);
+        const std::set<AstSenTree*>& domains = procCache.m_processDomains;
+        for (AstVarScope* const vscp : procCache.m_writtenBySuspendable) {
+            m_externalDomains[vscp].insert(domains.begin(), domains.end());
             vscp->varp()->setWrittenBySuspendable();
         }
-        m_processDomains.clear();
-        m_writtenBySuspendable.clear();
-        m_addedCaches.clear();
-        m_virtualCalls.clear();
+        m_cachep = nullptr;
         m_inProcess = false;
         m_gatherVars = false;
     }
@@ -359,35 +333,25 @@ class AwaitVisitor final : public VNVisitor {
     void visit(AstCAwait* nodep) override {
         if (AstSenTree* const sentreep = nodep->sentreep()) {
             if (!sentreep->user1SetOnce()) createResumeActive(nodep);
-            if (m_inProcess) m_processDomains.insert(sentreep);
+            if (m_inProcess) m_cachep->m_processDomains.insert(sentreep);
         }
         iterateChildren(nodep);
     }
     void visit(AstNodeVarRef* nodep) override {
         if (m_gatherVars && nodep->access().isWriteOrRW() && !nodep->varp()->ignoreSchedWrite()) {
-            m_writtenBySuspendable.insert(nodep->varScopep());
+            m_cachep->m_writtenBySuspendable.insert(nodep->varScopep());
         }
     }
     void visit(AstNodeCCall* const nodep) override {
         iterateChildren(nodep);
         if (!m_inProcess) return;  // Skip if not in process - nothing would be added to any set
         // We need to visit bodies of non-inlined functions
-        const auto& cfuncps = m_classGraphp->getCallPossibleCFuncs(nodep);
-        if (cfuncps.empty()) {
-            visitCalledCFunc(nodep->funcp());
-        } else if (m_virtualCalls.emplace(nodep->funcp(), m_gatherVars).second) {
-            // The possible functions depend only on the called function, and visiting them again
-            // would not change the current sets
-            for (AstCFunc* const cfuncp : cfuncps) visitCalledCFunc(cfuncp);
-        }
+        m_cachep->m_callees.insert(callCache(nodep));
     }
     void visit(AstCFunc* const nodep) override {
         const auto& value = m_cfuncsCache(nodep);
-        // Check whether it was already visited by visitCalledCFunc()
-        if (value[0].m_state != CFuncCache::UNINITIALIZED
-            || value[1].m_state != CFuncCache::UNINITIALIZED) {
-            return;
-        }
+        // Check whether it was already visited by calledCache()
+        if (value[0].m_visited || value[1].m_visited) return;
         iterateChildren(nodep);
     }
     void visit(AstExprStmt* nodep) override { iterateChildren(nodep); }
