@@ -6490,6 +6490,17 @@ class RandomizeVisitor final : public VNVisitor {
         // Virtual, so an object of a derived class is checked by its own methods
         for (AstClass* const derivedp : m_derivedClasses[classp])
             getCreateRandomizeNullFunc(derivedp, phase);
+        // As for randomize(), an object of a cycle of rand handles is flagged during each
+        // phase, so the phase reaches it once
+        AstVar* const randomizingVarp = getRandomizingVarIfCycle(classp);
+        const auto setRandomizing = [&](bool value) {
+            funcp->addStmtsp(
+                new AstAssign{fl,
+                              new AstVarRef{fl, VN_AS(randomizingVarp->user2p(), NodeModule),
+                                            randomizingVarp, VAccess::WRITE},
+                              new AstConst{fl, AstConst::BitTrue{}, value}});
+        };
+        if (randomizingVarp) setRandomizing(true);
         if (phase == NullPhase::PRE) addPrePostCall(classp, funcp, "pre_randomize");
         AstVar* const classGenp = getRandomGenerator(classp);
         if (phase != NullPhase::CHECK || !classGenp) {
@@ -6534,13 +6545,26 @@ class RandomizeVisitor final : public VNVisitor {
                 if (!memberVarp->rand().isRandomizable()) return;
                 if (!VN_IS(arrayElementDTypep(memberVarp->dtypep()), ClassRefDType)) return;
                 AstVarRef* const refp = new AstVarRef{fl, ownerClassp, memberVarp, VAccess::READ};
-                AstNodeStmt* const stmtp = newRandStmtsp(fl, refp, nullptr, fvarp);
+                AstNodeStmt* stmtp = newRandStmtsp(fl, refp, nullptr, fvarp);
+                if (inRandHandleCycle(memberVarp, classp)) {
+                    stmtp = new AstIf{
+                        fl,
+                        new AstLogAnd{
+                            fl,
+                            new AstNeq{fl,
+                                       new AstVarRef{fl, ownerClassp, memberVarp, VAccess::READ},
+                                       new AstConst{fl, AstConst::Null{}}},
+                            new AstNot{fl, newRandomizingSelp(fl, ownerClassp, memberVarp,
+                                                              VAccess::READ)}},
+                        stmtp};
+                }
                 funcp->addStmtsp(wrapIfRandMode(
                     classp, memberVarp,
                     new AstBegin{fl, m_uniqueNames.get("__VrandBlock"), stmtp, false}));
             });
         }
         if (phase == NullPhase::POST) addPrePostCall(classp, funcp, "post_randomize");
+        if (randomizingVarp) setRandomizing(false);
     }
 
     // Rewrite a LogIf-of-Dist chain into nested AstConstraintIf. The outermost
