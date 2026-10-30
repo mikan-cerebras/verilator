@@ -31,11 +31,28 @@ class Outer extends OuterBase;
   constraint c_d { foreach (m_in.m_d[i]) m_in.m_d[i] == i; }
 endclass
 
+// Arrays with only a size constraint, of the class and of a rand member object
+class Sized;
+  rand int m_q[];
+  constraint c_size { m_q.size() == 2; }
+endclass
+
+class Holder;
+  rand Sized m_s;
+  function new();
+    m_s = new;
+  endfunction
+endclass
+
 module t;
   initial begin
     Outer o;
+    Sized s;
+    Holder h;
     int ok;
     o = new;
+    s = new;
+    h = new;
     repeat (5) begin
       ok = o.randomize();
       `checkd(ok, 1);
@@ -57,6 +74,23 @@ module t;
       o.m_in.m_d = '{0, 1};
       ok = o.randomize(null);
       `checkd(ok, 1);
+
+      ok = s.randomize();
+      `checkd(ok, 1);
+      ok = s.randomize(null);
+      `checkd(ok, 1);
+      s.m_q = new[5];
+      ok = s.randomize(null);
+      `checkd(ok, 0);
+
+      ok = h.randomize();
+      `checkd(ok, 1);
+      `checkd(h.m_s.m_q.size(), 2);
+      ok = h.randomize(null);
+      `checkd(ok, 1);
+      h.m_s.m_q = new[5];
+      ok = h.randomize(null);
+      `checkd(ok, 0);
     end
     $write("*-* All Finished *-*\n");
     $finish;

@@ -6432,15 +6432,17 @@ class RandomizeVisitor final : public VNVisitor {
         } else {
             // Register the variables as new() and randomize() do, so arrays have their current
             // elements, and set the size variables the solver checks array sizes with
+            VInsertionSet<AstVar*> sizedArrays;
             for (AstClass* cp = classp; cp;
                  cp = cp->extendsp() ? cp->extendsp()->classp() : nullptr) {
                 copyVariableRegistrations(VN_AS(m_memberMap.findMember(cp, "new"), Func), funcp);
                 for (AstVar* const arrVarp : m_sizeConstrainedArrays[cp])
-                    funcp->addStmtsp(newSizeVarAssign(fl, arrVarp));
+                    sizedArrays.insert(arrVarp);
             }
-            VInsertionSet<AstVar*> resizedArrays;
             MemberArrays memberArrays;
-            addResizedArrays(classp, resizedArrays, memberArrays);
+            addResizedArrays(classp, sizedArrays, memberArrays);
+            for (AstVar* const arrVarp : sizedArrays)
+                funcp->addStmtsp(newSizeVarAssign(fl, arrVarp));
             for (const auto& pathMsel : memberArrays) {
                 const AstMemberSel* const mselp = pathMsel.second;
                 funcp->addStmtsp(newSizeVarAssign(fl, mselp->varp(), mselp));
