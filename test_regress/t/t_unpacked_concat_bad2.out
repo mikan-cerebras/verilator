@@ -22,4 +22,19 @@
                                         : ... Item data type: 'int$[1:3]' (2-state)
    25 |     A9_logic = {A3, 4, 5, A3, 6};
       |                           ^~
+%Error: t/t_unpacked_concat_bad2.v:40:15: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'class Other'
+   40 |     cq = {cq, o};
+      |               ^
+%Error: t/t_unpacked_concat_bad2.v:41:11: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'class Other'
+   41 |     cd = {o, cd};
+      |           ^
+%Error: t/t_unpacked_concat_bad2.v:42:12: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'class Other'
+   42 |     cq = '{o};
+      |            ^
 %Error: Exiting due to
