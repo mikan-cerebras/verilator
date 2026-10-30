@@ -6619,18 +6619,30 @@ class WidthVisitor final : public VNVisitor {
     template <typename T_Item, typename T_Cons>
     void addConsItem(T_Cons* consp, AstNodeExpr* valuep) {
         AstNodeDType* const arrayDtp = consp->dtypep()->skipRefp();
-        // An element if assignable to the element type, else an array (IEEE 1800-2023 10.10)
-        const VCastable castable
-            = AstNode::computeCastable(arrayDtp->subDTypep(), valuep->dtypep(), nullptr);
-        const bool isElement = castable.isAssignable();
+        AstNodeDType* const elemDtp = arrayDtp->subDTypep();
+        const AstNodeDType* const valueDtp = valuep->dtypep()->skipRefp();
+        // An element if assignable to the element type, else an array of such elements
+        // (IEEE 1800-2023 10.10)
+        const bool isElement = AstNode::computeCastable(elemDtp, valueDtp, nullptr).isAssignable();
+        if (!isElement
+            && AstNode::computeCastable(
+                   elemDtp, valueDtp->isNonPackedArray() ? valueDtp->subDTypep() : valueDtp,
+                   nullptr)
+                   == VCastable::INCOMPATIBLE) {
+            valuep->v3error("Unpacked array concatenation item is neither an element nor"
+                            " an array of elements of its target (IEEE 1800-2023 10.10)"
+                            << warnDTypes(valuep, elemDtp, valuep->dtypep(), "Element", "Item"));
+            VL_DO_DANGLING(pushDeletep(valuep), valuep);
+            return;
+        }
         // A bounded queue to splice is constructed first, to truncate it, unless it has this
         // constructor's type (e.g. a nested concatenation), as truncating once keeps the same
         // elements, and warns once with the full attempted size
-        const AstQueueDType* const subQueueDtp = VN_CAST(valuep->dtypep()->skipRefp(), QueueDType);
+        const AstQueueDType* const subQueueDtp = VN_CAST(valueDtp, QueueDType);
         if (!isElement && !isKeyedCons(valuep)
             && !(subQueueDtp && subQueueDtp->boundp() && subQueueDtp != arrayDtp)) {
             T_Cons* const subp = AstNode::cast<T_Cons>(valuep);
-            if (subp && subp->dtypep()->skipRefp()->subDTypep() == arrayDtp->subDTypep()) {
+            if (subp && subp->dtypep()->skipRefp()->subDTypep() == elemDtp) {
                 if (subp->itemsp()) consp->addItemsp(subp->itemsp()->unlinkFrBackWithNext());
                 VL_DO_DANGLING(pushDeletep(subp), subp);
                 return;
@@ -6643,20 +6655,12 @@ class WidthVisitor final : public VNVisitor {
                 addConsItems(consp, dynp);
                 return;
             }
-            if (castable == VCastable::INCOMPATIBLE) {  // Not an array either
-                valuep->v3error("Unpacked array concatenation item is neither an element nor"
-                                " an array of elements of its target (IEEE 1800-2023 10.10)"
-                                << warnDTypes(valuep, arrayDtp->subDTypep(), valuep->dtypep(),
-                                              "Element", "Item"));
-                VL_DO_DANGLING(pushDeletep(valuep), valuep);
-                return;
-            }
         }
         T_Item* const itemp = new T_Item{valuep->fileline(), valuep};
         consp->addItemsp(itemp);
         // Width the value now, as constructors are widthed when created
         if (isElement) {
-            iterateCheckTyped(itemp, "value", valuep, arrayDtp->subDTypep(), FINAL);
+            iterateCheckTyped(itemp, "value", valuep, elemDtp, FINAL);
         } else {
             userIterateAndNext(valuep, WidthVP{arrayDtp, FINAL}.p());
         }

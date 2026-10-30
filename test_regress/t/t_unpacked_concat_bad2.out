@@ -37,4 +37,24 @@
                                         : ... Item data type: 'class Other'
    42 |     cq = '{o};
       |            ^
+%Error: t/t_unpacked_concat_bad2.v:52:15: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'class Other$[$]'
+   52 |     cq = {cq, oq};
+      |               ^~
+%Error: t/t_unpacked_concat_bad2.v:53:11: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'class Other$[]'
+   53 |     cq = {od, cq};
+      |           ^~
+%Error: t/t_unpacked_concat_bad2.v:54:15: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'class Other$[0:1]'
+   54 |     cq = {cq, ou};
+      |               ^~
+%Error: t/t_unpacked_concat_bad2.v:55:15: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'class Other$[$:2]'
+   55 |     cq = {cq, ob};
+      |               ^~
 %Error: Exiting due to
