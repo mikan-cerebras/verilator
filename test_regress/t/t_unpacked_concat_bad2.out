@@ -57,4 +57,34 @@
                                         : ... Item data type: 'class Other$[$:2]'
    55 |     cq = {cq, ob};
       |               ^~
+%Error: t/t_unpacked_concat_bad2.v:64:15: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'int'
+                                        : ... Item data type: 'class Cls'
+   64 |     iq = {iq, c};
+      |               ^
+%Error: t/t_unpacked_concat_bad2.v:65:11: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'int'
+                                        : ... Item data type: 'class Cls'
+   65 |     id = {c, id};
+      |           ^
+%Error: t/t_unpacked_concat_bad2.v:66:12: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'int'
+                                        : ... Item data type: 'class Cls'
+   66 |     iq = '{c};
+      |            ^
+%Error: t/t_unpacked_concat_bad2.v:67:15: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'bit[31:0]'
+   67 |     cq = {cq, 5};
+      |               ^
+%Error: t/t_unpacked_concat_bad2.v:68:15: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'int'
+                                        : ... Item data type: 'class Cls$[$]'
+   68 |     iq = {iq, cq};
+      |               ^~
+%Error: t/t_unpacked_concat_bad2.v:69:15: Unpacked array concatenation item is neither an element nor an array of elements of its target (IEEE 1800-2023 10.10)
+                                        : ... Element data type: 'class Cls'
+                                        : ... Item data type: 'int$[$]'
+   69 |     cq = {cq, iq};
+      |               ^~
 %Error: Exiting due to
