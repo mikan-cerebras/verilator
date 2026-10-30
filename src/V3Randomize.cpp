@@ -7468,8 +7468,8 @@ class RandomizeVisitor final : public VNVisitor {
                     m_uniqueNames, randomizep,   &sizeArrays,       prepareArraysTaskp};
                 if (constrp->itemsp()) skipInactiveElems(constrp);
                 std::vector<ConstraintFuncCall>& calls = m_constraintFuncCalls[constrp];
-                calls.insert(calls.end(), exprVisitor.funcCalls().begin(),
-                             exprVisitor.funcCalls().end());
+                const std::vector<ConstraintFuncCall>& newCalls = exprVisitor.funcCalls();
+                calls.insert(calls.end(), newCalls.begin(), newCalls.end());
                 if (constrp->itemsp()) {
                     AstNode* stmtsp = wrapIfConstraintMode(
                         nodep, constrp, constrp->itemsp()->unlinkFrBackWithNext());
@@ -8410,8 +8410,8 @@ class RandomizeVisitor final : public VNVisitor {
             // rounds and is copied into this call's generator
             const std::vector<ConstraintFuncCall> classCalls = classFuncCalls(classp);
             calls.insert(calls.end(), classCalls.begin(), classCalls.end());
-            calls.insert(calls.end(), exprVisitor.funcCalls().begin(),
-                         exprVisitor.funcCalls().end());
+            const std::vector<ConstraintFuncCall>& newCalls = exprVisitor.funcCalls();
+            calls.insert(calls.end(), newCalls.begin(), newCalls.end());
             addFuncRounds(
                 randomizeFuncp, solveAfterp ? solveAfterp->nextp() : randomizeFuncp->stmtsp(),
                 classGenp ? classGenp : localGenp, localGenp, retVarp, basicRandomizeFuncp, calls,
