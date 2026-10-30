@@ -6187,6 +6187,7 @@ class RandomizeVisitor final : public VNVisitor {
     // Rebuild constraints after resize
     void addConstraintRebuild(AstFunc* const randomizep, AstVar* const setupGenp,
                               AstVar* const solveGenp, const VInsertionSet<AstVar*>& sizeArrayVars,
+                              const VInsertionSet<AstVar*>& resizedArrayVars,
                               AstNode* const setupStmtsp) {
         FileLine* const fl = randomizep->fileline();
         for (AstVar* const arrVarp : sizeArrayVars) {
@@ -6194,7 +6195,8 @@ class RandomizeVisitor final : public VNVisitor {
         }
         randomizep->addStmtsp(implementConstraintsClear(fl, setupGenp));
         randomizep->addStmtsp(setupStmtsp);
-        for (AstVar* const arrVarp : sizeArrayVars) {
+        // The arrays are resized once, so their sizes must not change in the final solve
+        for (AstVar* const arrVarp : resizedArrayVars) {
             randomizep->addStmtsp(newPinSizeVariable(fl, arrVarp, solveGenp));
         }
     }
@@ -6254,6 +6256,7 @@ class RandomizeVisitor final : public VNVisitor {
         // Both IS_RANDOMIZED and IS_RANDOMIZED_GLOBAL classes need full constraint support
         // IS_RANDOMIZED_GLOBAL classes can be randomized independently
         AstNodeExpr* beginValp = nullptr;
+        bool sizePhase = false;  // Sizes are solved and arrays resized before the final solve
         AstVar* genp = getRandomGenerator(nodep);
         if (genp) {
             // Phase 1: Process all constraints (create tasks, run ConstraintExprVisitor)
@@ -6364,7 +6367,8 @@ class RandomizeVisitor final : public VNVisitor {
             addResizedArrays(nodep, pinnedArrays);
             addFrozenSizePins(pinnedArrays, randomizep, genp, randModeVarp);
 
-            if (!sizeArrayVars.empty()) {
+            sizePhase = !sizeArrayVars.empty();
+            if (sizePhase) {
                 AstVar* const sizeOkVarp = addSizeSolvep(randomizep, genp);
                 if (AstTask* const resizeAllTaskp
                     = VN_AS(m_memberMap.findMember(nodep, "__Vresize_constrained_arrays"), Task)) {
@@ -6372,7 +6376,13 @@ class RandomizeVisitor final : public VNVisitor {
                         new AstIf{fl, new AstVarRef{fl, sizeOkVarp, VAccess::READ},
                                   (new AstTaskRef{fl, resizeAllTaskp})->makeStmt(), nullptr});
                 }
-                addConstraintRebuild(randomizep, genp, genp, sizeArrayVars,
+                // Basic randomization fills the resized arrays. It runs before the final
+                // solve, so it cannot override a solved leaf of a member object.
+                AstFunc* const basicRandomizep
+                    = V3Randomize::newRandomizeFunc(m_memberMap, nodep, BASIC_RANDOMIZE_FUNC_NAME);
+                randomizep->addStmtsp(new AstAssign{fl, new AstVarRef{fl, fvarp, VAccess::WRITE},
+                                                    new AstFuncRef{fl, basicRandomizep}});
+                addConstraintRebuild(randomizep, genp, genp, sizeArrayVars, pinnedArrays,
                                      (new AstTaskRef{fl, setupAllTaskp})->makeStmt());
 
                 AstVar* const finalOkVarp = new AstVar{fl, VVarType::BLOCKTEMP, "__Vfinal_ok",
@@ -6382,8 +6392,9 @@ class RandomizeVisitor final : public VNVisitor {
                 randomizep->addStmtsp(new AstAssign{
                     fl, new AstVarRef{fl, finalOkVarp, VAccess::WRITE}, newSolverCallp(genp)});
 
-                beginValp = new AstAnd{fl, new AstVarRef{fl, sizeOkVarp, VAccess::READ},
-                                       new AstVarRef{fl, finalOkVarp, VAccess::READ}};
+                beginValp = new AstAnd{fl, new AstVarRef{fl, fvarp, VAccess::READ},
+                                       new AstAnd{fl, new AstVarRef{fl, sizeOkVarp, VAccess::READ},
+                                                  new AstVarRef{fl, finalOkVarp, VAccess::READ}}};
             } else {
                 beginValp = newSolverCallp(genp);
             }
@@ -6409,38 +6420,38 @@ class RandomizeVisitor final : public VNVisitor {
         AstFunc* const basicRandomizep
             = V3Randomize::newRandomizeFunc(m_memberMap, nodep, BASIC_RANDOMIZE_FUNC_NAME);
         addBasicRandomizeBody(basicRandomizep, nodep, randModeVarp);
-        // A basicFirst owner basic-randomizes first, then the solver overrides the
-        // constrained leaves, so a globally-constrained leaf (not user3) is still
-        // basic-randomized when its type is randomized standalone.
         AstVarRef* const fvarRefp = new AstVarRef{fl, fvarp, VAccess::WRITE};
-        randomizep->addStmtsp(new AstAssign{
-            fl, fvarRefp, basicFirst ? new AstFuncRef{fl, basicRandomizep} : beginValp});
+        if (sizePhase) {
+            randomizep->addStmtsp(new AstAssign{fl, fvarRefp, beginValp});
+        } else {
+            // A basicFirst owner basic-randomizes first, then the solver overrides the
+            // constrained leaves, so a globally-constrained leaf (not user3) is still
+            // basic-randomized when its type is randomized standalone.
+            randomizep->addStmtsp(new AstAssign{
+                fl, fvarRefp, basicFirst ? new AstFuncRef{fl, basicRandomizep} : beginValp});
 
-        const auto sizeArraysIt = m_sizeConstrainedArrays.find(nodep);
-        const bool needsSizePhase
-            = sizeArraysIt != m_sizeConstrainedArrays.end() && !sizeArraysIt->second.empty();
-        // Size-only resize fallback (no element constraint, so no two-pass phase).
-        // Must run after the solver .next() that sets the size variable; emit it
-        // after whichever assignment below holds the solver call.
-        const auto emitResizeFallback = [&]() {
-            if (needsSizePhase) return;
-            if (AstTask* const resizeAllTaskp
-                = VN_AS(m_memberMap.findMember(nodep, "__Vresize_constrained_arrays"), Task)) {
-                AstTaskRef* const resizeTaskRefp = new AstTaskRef{fl, resizeAllTaskp};
-                randomizep->addStmtsp(resizeTaskRefp->makeStmt());
-            }
-        };
-        if (!basicFirst) emitResizeFallback();
+            // Size-only resize fallback (no element constraint, so no two-pass phase).
+            // Must run after the solver .next() that sets the size variable; emit it
+            // after whichever assignment below holds the solver call.
+            const auto emitResizeFallback = [&]() {
+                if (AstTask* const resizeAllTaskp
+                    = VN_AS(m_memberMap.findMember(nodep, "__Vresize_constrained_arrays"), Task)) {
+                    AstTaskRef* const resizeTaskRefp = new AstTaskRef{fl, resizeAllTaskp};
+                    randomizep->addStmtsp(resizeTaskRefp->makeStmt());
+                }
+            };
+            if (!basicFirst) emitResizeFallback();
 
-        AstVarRef* const fvarRefReadp = fvarRefp->cloneTree(false);
-        fvarRefReadp->access(VAccess::READ);
+            AstVarRef* const fvarRefReadp = fvarRefp->cloneTree(false);
+            fvarRefReadp->access(VAccess::READ);
 
-        AstNodeExpr* const secondHalfp
-            = basicFirst ? beginValp : new AstFuncRef{fl, basicRandomizep};
-        randomizep->addStmtsp(new AstAssign{fl, fvarRefp->cloneTree(false),
-                                            new AstAnd{fl, fvarRefReadp, secondHalfp}});
+            AstNodeExpr* const secondHalfp
+                = basicFirst ? beginValp : new AstFuncRef{fl, basicRandomizep};
+            randomizep->addStmtsp(new AstAssign{fl, fvarRefp->cloneTree(false),
+                                                new AstAnd{fl, fvarRefReadp, secondHalfp}});
 
-        if (basicFirst) emitResizeFallback();
+            if (basicFirst) emitResizeFallback();
+        }
 
         // Call nested post_randomize on rand class-type members (IEEE 18.4.1)
         if (classHasRandClassMembers(nodep)) {
