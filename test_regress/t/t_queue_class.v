@@ -17,6 +17,24 @@ module t;
     endfunction
   endclass
 
+  interface class Ifc;
+  endclass
+  class Base;
+  endclass
+  class Impl extends Base implements Ifc;
+  endclass
+
+  initial begin
+    // Elements of the queue's class by an upcast, or null
+    Ifc iq[$];
+    Impl impl;
+    impl = new;
+    iq = {iq, impl, null};
+    if (iq.size() != 2) $stop;
+    if (iq[0] != impl) $stop;
+    if (iq[1] != null) $stop;
+  end
+
   initial begin
     Cls c2[1:0];
     Cls cq[$];

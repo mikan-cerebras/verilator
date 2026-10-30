@@ -26,4 +26,19 @@ module t;
     $write("*-* All Finished *-*\n");
     $finish;
   end
+
+  class Cls;
+  endclass
+  class Other;
+  endclass
+
+  initial begin
+    Cls cq[$];
+    Cls cd[];
+    Other o;
+    // Item of an incompatible type, so neither an element nor an array
+    cq = {cq, o};
+    cd = {o, cd};
+    cq = '{o};
+  end
 endmodule

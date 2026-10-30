@@ -6620,9 +6620,9 @@ class WidthVisitor final : public VNVisitor {
     void addConsItem(T_Cons* consp, AstNodeExpr* valuep) {
         AstNodeDType* const arrayDtp = consp->dtypep()->skipRefp();
         // An element if assignable to the element type, else an array (IEEE 1800-2023 10.10)
-        const bool isElement
-            = AstNode::computeCastable(arrayDtp->subDTypep(), valuep->dtypep(), nullptr)
-                  .isAssignable();
+        const VCastable castable
+            = AstNode::computeCastable(arrayDtp->subDTypep(), valuep->dtypep(), nullptr);
+        const bool isElement = castable.isAssignable();
         // A bounded queue to splice is constructed first, to truncate it, unless it has this
         // constructor's type (e.g. a nested concatenation), as truncating once keeps the same
         // elements, and warns once with the full attempted size
@@ -6641,6 +6641,14 @@ class WidthVisitor final : public VNVisitor {
             }
             if (AstConsDynArray* const dynp = VN_CAST(valuep, ConsDynArray)) {
                 addConsItems(consp, dynp);
+                return;
+            }
+            if (castable == VCastable::INCOMPATIBLE) {  // Not an array either
+                valuep->v3error("Unpacked array concatenation item is neither an element nor"
+                                " an array of elements of its target (IEEE 1800-2023 10.10)"
+                                << warnDTypes(valuep, arrayDtp->subDTypep(), valuep->dtypep(),
+                                              "Element", "Item"));
+                VL_DO_DANGLING(pushDeletep(valuep), valuep);
                 return;
             }
         }
