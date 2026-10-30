@@ -2851,6 +2851,10 @@ class ConstraintExprVisitor final : public VNVisitor {
             nodep->unlinkFrBack();
         } else if (m_wantSingle) {
             AstNodeExpr* const itemp = editSingle(fl, nodep->bodyp());
+            if (!itemp) {  // All items were ignored with a warning
+                VL_DO_DANGLING(nodep->unlinkFrBack()->deleteTree(), nodep);
+                return;
+            }
             AstCStmt* const cstmtp = new AstCStmt{fl};
             cstmtp->add("ret += \" \";\n");
             cstmtp->add("ret += ");
@@ -2873,6 +2877,10 @@ class ConstraintExprVisitor final : public VNVisitor {
                 if (const AstVar* const varp = VN_CAST(elemp, Var)) m_foreachIdxVars.insert(varp);
             }
             iterateAndNextNull(nodep->bodyp());
+            if (!nodep->bodyp()) {  // All items were ignored with a warning
+                VL_DO_DANGLING(nodep->unlinkFrBack()->deleteTree(), nodep);
+                return;
+            }
             AstNode* const bodyp
                 = prependDistPreamble(nodep, nodep->bodyp()->unlinkFrBackWithNext());
             nodep->replaceWith(
@@ -2885,6 +2893,17 @@ class ConstraintExprVisitor final : public VNVisitor {
     void visit(AstConstraintBefore* nodep) override {
         // Generate solveBefore() calls for each (lhs, rhs) variable pair.
         // Do NOT iterate children -- these are variable references, not constraint expressions.
+        if (m_wantSingle) {
+            // IEEE 1800-2023 A.1.10 allows solve-before only as a constraint_block_item.
+            // Some simulators accept it nested, Verilator inside foreach, but a conditional
+            // is lowered to a single expression with no place for the ordering. Ignoring it
+            // only changes the distribution of solutions (18.5.9).
+            nodep->v3warn(CONSTRAINTIGN, "Ignoring solve-before inside conditional constraint;"
+                                         " IEEE 1800-2023 A.1.10 allows it only directly in"
+                                         " a constraint block");
+            VL_DO_DANGLING(nodep->unlinkFrBack()->deleteTree(), nodep);
+            return;
+        }
         FileLine* const fl = nodep->fileline();
         AstNodeModule* const genModp = VN_AS(m_genp->user2p(), NodeModule);
 
