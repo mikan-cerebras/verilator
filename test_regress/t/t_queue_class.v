@@ -25,14 +25,17 @@ module t;
   endclass
 
   initial begin
-    // Elements of the queue's class by an upcast, or null
+    // Elements of the queue's class by an upcast, or null, or an array of them
     Ifc iq[$];
     Impl impl;
+    Impl implq[$];
     impl = new;
-    iq = {iq, impl, null};
-    if (iq.size() != 2) $stop;
+    implq.push_back(impl);
+    iq = {iq, impl, null, implq};
+    if (iq.size() != 3) $stop;
     if (iq[0] != impl) $stop;
     if (iq[1] != null) $stop;
+    if (iq[2] != impl) $stop;
   end
 
   initial begin

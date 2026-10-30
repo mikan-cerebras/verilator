@@ -41,4 +41,17 @@ module t;
     cd = {o, cd};
     cq = '{o};
   end
+
+  initial begin
+    Cls cq[$];
+    Other oq[$];
+    Other od[];
+    Other ou[2];
+    Other ob[$:2];
+    // Array of an incompatible type, so not an array of elements
+    cq = {cq, oq};
+    cq = {od, cq};
+    cq = {cq, ou};
+    cq = {cq, ob};
+  end
 endmodule
