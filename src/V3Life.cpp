@@ -30,6 +30,7 @@
 #include "V3Const.h"
 #include "V3Stats.h"
 
+#include <unordered_set>
 #include <vector>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -46,9 +47,15 @@ class LifeState final {
 public:
     VDouble0 m_statAssnDel;  // Statistic tracking
     VDouble0 m_statAssnCon;  // Statistic tracking
+    // Variables also accessed through a class handle or virtual interface, so possibly
+    // through another of their AstVarScopes than referenced
+    std::unordered_set<const AstVar*> m_memberSelVarps;
 
     // CONSTRUCTORS
-    LifeState() = default;
+    explicit LifeState(AstNetlist* netlistp) {
+        netlistp->foreach(
+            [&](const AstMemberSel* selp) { m_memberSelVarps.insert(selp->varp()); });
+    }
     ~LifeState() {
         V3Stats::addStatSum("Optimizations, Lifetime assign deletions", m_statAssnDel);
         V3Stats::addStatSum("Optimizations, Lifetime constant prop", m_statAssnCon);
@@ -148,6 +155,7 @@ public:
         if (varp->isSigPublic()) return;
         if (varp->isReadByDpi()) return;
         if (varp->sensIfacep()) return;
+        if (m_statep->m_memberSelVarps.count(varp)) return;
         // Check the var entry, and remove if appropriate
         AstNodeStmt* const oldassp = entr.assignp();
         if (!oldassp) return;
@@ -190,7 +198,8 @@ public:
         } else {
             if (AstConst* const constp = entr.constNodep()) {
                 if (!varrefp->varp()->isSigPublic() && !varrefp->varp()->isWrittenByDpi()
-                    && !varrefp->varp()->isVirtIface()) {
+                    && !varrefp->varp()->isVirtIface()
+                    && !m_statep->m_memberSelVarps.count(varrefp->varp())) {
                     // Aha, variable is constant; substitute in.
                     // We'll later constant propagate
                     UINFO(4, "     replaceconst: " << varrefp);
@@ -519,7 +528,7 @@ public:
 void V3Life::lifeAll(AstNetlist* nodep) {
     UINFO(2, __FUNCTION__ << ":");
     {
-        LifeState state;
+        LifeState state{nodep};
         LifeTopVisitor{nodep, &state};
     }  // Destruct before checking
     VIsCached::clearCacheTree();  // Removing assignments may affect isPure
