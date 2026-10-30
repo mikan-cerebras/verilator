@@ -2494,10 +2494,13 @@ class ConstraintExprVisitor final : public VNVisitor {
             nodep->fileline(), m_nestedAccessp ? nodep->name() : smtName, false, nullptr};
         // A variable of the object of an inactive handle is a state variable. The objects of
         // a handle array are checked where their fields are selected.
+        // rand_mode() only affects rand variables, so not the size variable of an array of
+        // the object, which is pinned instead.
         const bool classHandleArray = isClassHandleArray(varp);
         AstNodeExpr* const handlesActivep
-            = memberselp && !classHandleArray ? newHandlesActivep(memberselp->fromp(), true, false)
-                                              : nullptr;
+            = memberselp && !classHandleArray && varp->rand().isRandomizable()
+                  ? newHandlesActivep(memberselp->fromp(), true, false)
+                  : nullptr;
         if ((!randMode.usesMode || classHandleArray) && !handlesActivep) {
             // Global constraints keep nodep alive for write_var processing
             if (!isGlobalConstrained) VL_DO_DANGLING(pushDeletep(nodep), nodep);
@@ -6741,7 +6744,8 @@ class RandomizeVisitor final : public VNVisitor {
                 funcp->addStmtsp(newSizeVarAssign(fl, arrVarp));
             for (const auto& pathMsel : memberArrays) {
                 const AstMemberSel* const mselp = pathMsel.second;
-                funcp->addStmtsp(newSizeVarAssign(fl, mselp->varp(), mselp));
+                funcp->addStmtsp(
+                    newIfNonNullp(fl, newSizeVarAssign(fl, mselp->varp(), mselp), mselp));
             }
             copyVariableRegistrations(VN_AS(m_memberMap.findMember(classp, "randomize"), Func),
                                       funcp);
@@ -7313,6 +7317,15 @@ class RandomizeVisitor final : public VNVisitor {
     static std::string siblingSmtName(const AstVar* const varp, const AstMemberSel* const mselp) {
         return mselp ? buildMemberPath(mselp->fromp()) + "." + varp->name() : varp->name();
     }
+    // Statements stmtsp on the array of member select mselp, if any, run only while the
+    // handles to its object are not null
+    static AstNode* newIfNonNullp(FileLine* const fl, AstNode* const stmtsp,
+                                  const AstMemberSel* const mselp) {
+        // The object of a null handle is not randomized (IEEE 1800-2023 18.4), and its
+        // constraints copied into this class are not solved
+        if (!mselp) return stmtsp;
+        return new AstIf{fl, newHandlesActivep(mselp->fromp(), false, true), stmtsp};
+    }
     // Add write_var calls for each array element after resizing it with array-size constraint
     void addArrayElemRefresh(FileLine* const fl, AstVar* const arrVarp, AstFunc* const randomizep,
                              AstVar* const genp, const AstMemberSel* const mselp = nullptr) {
@@ -7349,7 +7362,7 @@ class RandomizeVisitor final : public VNVisitor {
             methodp->addPinsp(new AstConst{fl, AstConst::Unsized64{}, rmode.index});
         }
 
-        randomizep->addStmtsp(methodp->makeStmt());
+        randomizep->addStmtsp(newIfNonNullp(fl, methodp->makeStmt(), mselp));
     }
 
     AstNodeStmt* newPinSizeVariable(FileLine* const fl, AstVar* const arrVarp, AstVar* const genp,
@@ -7386,12 +7399,19 @@ class RandomizeVisitor final : public VNVisitor {
     void addFrozenSizePin(FileLine* const fl, AstVar* const arrVarp, AstFunc* const randomizep,
                           AstVar* const genp, AstVar* const randModeVarp,
                           const AstMemberSel* const mselp = nullptr) {
+        // The size of an array of a member object is also kept while a handle to the object
+        // is inactive (IEEE 1800-2023 18.8); its constraints use the size variable even then
         const RandomizeMode rmode = {.asUQuad = arrVarp->user1()};
-        if (!rmode.usesMode) return;
-        randomizep->addStmtsp(newSizeVarAssign(fl, arrVarp, mselp));
-        AstNodeExpr* const modep = newModeBitRead(arrVarp, mselp, randModeVarp, fl);
-        randomizep->addStmtsp(
-            new AstIf{fl, new AstLogNot{fl, modep}, newPinSizeVariable(fl, arrVarp, genp, mselp)});
+        AstNodeExpr* activep = mselp ? newHandlesActivep(mselp->fromp(), true, false) : nullptr;
+        if (rmode.usesMode) {
+            AstNodeExpr* const modep = newModeBitRead(arrVarp, mselp, randModeVarp, fl);
+            activep = activep ? new AstLogAnd{fl, activep, modep} : modep;
+        }
+        if (!activep) return;
+        AstNode* const stmtsp = newSizeVarAssign(fl, arrVarp, mselp);
+        stmtsp->addNext(new AstIf{fl, new AstLogNot{fl, activep},
+                                  newPinSizeVariable(fl, arrVarp, genp, mselp)});
+        randomizep->addStmtsp(newIfNonNullp(fl, stmtsp, mselp));
     }
 
     void collectSizeConstrainedArrays(AstClass* classp,
@@ -7610,7 +7630,8 @@ class RandomizeVisitor final : public VNVisitor {
         }
         for (const auto& pathMsel : memberArrays) {
             const AstMemberSel* const mselp = pathMsel.second;
-            randomizep->addStmtsp(newPinSizeVariable(fl, mselp->varp(), solveGenp, mselp));
+            randomizep->addStmtsp(
+                newIfNonNullp(fl, newPinSizeVariable(fl, mselp->varp(), solveGenp, mselp), mselp));
         }
     }
 
@@ -8601,7 +8622,8 @@ class RandomizeVisitor final : public VNVisitor {
 
             for (const auto& pathMsel : memberArrays) {
                 const AstMemberSel* const mselp = pathMsel.second;
-                randomizeFuncp->addStmtsp(newPinSizeVariable(fl, mselp->varp(), localGenp, mselp));
+                randomizeFuncp->addStmtsp(newIfNonNullp(
+                    fl, newPinSizeVariable(fl, mselp->varp(), localGenp, mselp), mselp));
             }
 
             // Final solve: element values with sizes pinned
@@ -8723,7 +8745,8 @@ class RandomizeVisitor final : public VNVisitor {
                     AstCMethodHard* const resizep = new AstCMethodHard{
                         fl, arrayp->unlinkFrBack(), VCMethod::DYN_RESIZE, newSizeRefp()};
                     resizep->dtypep(nodep->findVoidDType());
-                    resizerTaskp->addStmtsp(new AstStmtExpr{fl, resizep});
+                    resizerTaskp->addStmtsp(
+                        newIfNonNullp(fl, new AstStmtExpr{fl, resizep}, memberSelp));
                 }
 
                 // Since size variable is signed int, we need additional constraint
