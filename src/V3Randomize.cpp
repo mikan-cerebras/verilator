@@ -4899,6 +4899,27 @@ class RandomizeVisitor final : public VNVisitor {
         if (objp) return new AstMemberSel{fl, objp->cloneTreePure(false), varp};
         return new AstVarRef{fl, VN_AS(varp->user2p(), Class), varp, VAccess::READ};
     }
+    // Skip the elements with rand_mode off in a constraint cloned from the objects of an array
+    void skipInactiveElems(AstConstraint* const constrp) {
+        // The object of an inactive element is not randomized (IEEE 1800-2023 18.8), so its
+        // constraints do not apply. Such a clone is a foreach over the array, already lowered
+        // to setup statements, which are skipped for those elements.
+        const auto it = m_cloneObjps.find(constrp);
+        if (it == m_cloneObjps.end()) return;
+        AstMemberSel* const selp = VN_CAST(it->second, MemberSel);
+        AstVar* const modeVarp
+            = elemModeVarp(selp ? selp->varp() : VN_AS(it->second, VarRef)->varp());
+        if (!modeVarp) return;
+        AstForeach* const foreachp = VN_AS(VN_AS(constrp->itemsp(), Begin)->stmtsp(), Foreach);
+        FileLine* const fl = foreachp->fileline();
+        AstVarRef* const idxRefp
+            = new AstVarRef{fl, VN_AS(foreachp->headerp()->elementsp(), Var), VAccess::READ};
+        AstNodeExpr* const offp = newElemModeOffp(
+            newMemberRefp(fl, selp ? selp->fromp() : nullptr, modeVarp), idxRefp);
+        VL_DO_DANGLING(idxRefp->deleteTree(), idxRefp);
+        AstNode* const bodyp = foreachp->bodyp()->unlinkFrBackWithNext();
+        foreachp->addBodyp(new AstIf{fl, new AstNot{fl, offp}, bodyp});
+    }
     // Statements making the solver keep the array's elements with rand_mode off unchanged
     AstNodeStmt* newElemModePinsp(AstVar* const arrVarp, AstVar* const modeVarp,
                                   AstVar* const genp, AstNodeExpr* const objp,
@@ -6907,6 +6928,7 @@ class RandomizeVisitor final : public VNVisitor {
                     classp,        m_memberMap,  constrp->itemsp(), nullptr,
                     genp,          randModeVarp, m_writtenVars,     &m_uniqueConstraintId,
                     m_uniqueNames, randomizep,   &sizeArrays,       prepareArraysTaskp};
+                if (constrp->itemsp()) skipInactiveElems(constrp);
                 if (constrp->itemsp()) {
                     AstNode* stmtsp = wrapIfConstraintMode(
                         nodep, constrp, constrp->itemsp()->unlinkFrBackWithNext());
