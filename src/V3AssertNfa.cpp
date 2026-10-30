@@ -3068,6 +3068,7 @@ class AssertNfaVisitor final : public VNVisitor {
 
         outerSpecp->replaceWith(propSpecp);
         VL_DO_DANGLING(pushDeletep(outerSpecp), outerSpecp);
+        V3AssertCommon::reducePlainAlways(propSpecp);
     }
 
     // True if an actual argument of funcrefp contains a property instance
@@ -3094,6 +3095,17 @@ class AssertNfaVisitor final : public VNVisitor {
         return false;
     }
 
+    // True if a property body is an 'always' of a property, only supported as a whole property
+    static bool isAlwaysOverPropertyOps(const AstPropSpec* specp) {
+        // As V3Width reports for the same property written out (IEEE 1800-2023 16.12.11)
+        const AstPropAlways* const alwaysp = VN_CAST(specp->propp(), PropAlways);
+        return alwaysp && alwaysp->propp()->exists([](const AstNode* np) {
+            const AstNodeExpr* const exprp = VN_CAST(np, NodeExpr);
+            return (exprp && exprp->isMultiCycleSva()) || VN_IS(np, Implication)
+                   || VN_IS(np, Until) || VN_IS(np, PropSpec);
+        });
+    }
+
     // Substitute property instances used as property operator operands by their bodies
     void inlineNestedPropertyRefs(AstNode* rootp) {
         // So the NFA sees them (IEEE 1800-2023 16.12.1).
@@ -3112,7 +3124,8 @@ class AssertNfaVisitor final : public VNVisitor {
             const AstPropSpec* const bodySpecp = getPropertySpecp(propyp);
             if (bodySpecp->sensesp() || bodySpecp->disablep()
                 || bodySpecp->propStrength() != VPropStrength::DEFAULT || hasPropertyArg(funcrefp)
-                || bodySpecp->exists([](const AstExprStmt*) { return true; }))
+                || bodySpecp->exists([](const AstExprStmt*) { return true; })
+                || isAlwaysOverPropertyOps(bodySpecp))
                 continue;
             AstPropSpec* const propSpecp = clonePropertyBody(funcrefp, propyp);
             AstNode* const bodyp = propSpecp->propp()->unlinkFrBack();
