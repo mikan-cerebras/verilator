@@ -284,6 +284,9 @@ class DelayedVisitor final : public VNVisitor {
 
     // STATE - across all visitors
     VInsertionSet<AstSenTree*> m_timingDomains;  // Timing resume domains
+    std::unordered_set<const CFuncCache*> m_addedCaches;  // Caches already in m_timingDomains
+    // Called functions of virtual calls already visited for m_timingDomains
+    std::unordered_set<const AstCFunc*> m_virtualCalls;
     V3SharedTmps m_dlyTmps{"__Vdly", VVarType::BLOCKTEMP};  // Temporary variables
     // Commit queue data types, by element type and partial flag. Shared by all instances,
     // as m_dlyTmps only shares variables with the same data type.
@@ -569,14 +572,17 @@ class DelayedVisitor final : public VNVisitor {
         return lhsp;
     }
 
-    void addCFuncCachedValues(const AstCFunc* const cfuncp,
-                              std::unordered_set<const AstCFunc*>& visited) {
-        if (!visited.insert(cfuncp).second) return;
+    // Add the cached values of a function and of the functions it includes to m_timingDomains
+    void addCFuncCachedValues(const AstCFunc* const cfuncp) {
         CFuncCache& value = m_cfuncsCache(cfuncp);
+        // Add each cache once per m_timingDomains, not once per call site. A cache reached here is
+        // either initialized and final, or of a function on m_callStack, which stays empty until
+        // the current m_timingDomains is done
+        if (!m_addedCaches.insert(&value).second) return;
         m_timingDomains.insert(value.m_timingDomains.begin(), value.m_timingDomains.end());
         m_nonInlinedCAwaitsWithSenTree += value.m_timingDomains.size();
         for (const AstCFunc* const includedp : value.m_includes) {
-            addCFuncCachedValues(includedp, visited);
+            addCFuncCachedValues(includedp);
         }
     }
 
@@ -1038,6 +1044,8 @@ class DelayedVisitor final : public VNVisitor {
         case CFuncCache::UNINITIALIZED: {
             // Save current state
             VL_RESTORER_CLEAR(m_timingDomains);
+            VL_RESTORER_CLEAR(m_addedCaches);
+            VL_RESTORER_CLEAR(m_virtualCalls);
 
             // Visit
             value.m_state = CFuncCache::VISITING;
@@ -1061,8 +1069,7 @@ class DelayedVisitor final : public VNVisitor {
         }
         case CFuncCache::INITIALIZED: break;
         }
-        std::unordered_set<const AstCFunc*> visited;
-        addCFuncCachedValues(nodep, visited);
+        addCFuncCachedValues(nodep);
     }
 
     // VISITORS
@@ -1203,6 +1210,8 @@ class DelayedVisitor final : public VNVisitor {
                                             || isProcedureWithSentreep<AstAlwaysObserved>(nodep)
                                             || isProcedureWithSentreep<AstAlwaysReactive>(nodep))
                                        && !containsClocled(m_activep->sentreep()->sensesp());
+        m_addedCaches.clear();
+        m_virtualCalls.clear();
         if (m_timingDomains.empty() && !addInitialTrigger) return;
 
         // There were some timing domains involved in the process. Add all of them as sensitivities
@@ -1426,7 +1435,9 @@ class DelayedVisitor final : public VNVisitor {
         const auto& cfuncps = m_classGraphp->getCallPossibleCFuncs(nodep);
         if (cfuncps.empty()) {
             visitCalledCFunc(nodep->funcp());
-        } else {
+        } else if (m_virtualCalls.insert(nodep->funcp()).second) {
+            // The possible functions depend only on the called function, and visiting them again
+            // would not change m_timingDomains
             for (AstCFunc* const cfuncp : cfuncps) visitCalledCFunc(cfuncp);
         }
     }
@@ -1437,6 +1448,8 @@ class DelayedVisitor final : public VNVisitor {
         VL_RESTORER(m_cfuncp);
         // Its timing domains are those of the processes calling it, see visitCalledCFunc()
         VL_RESTORER_CLEAR(m_timingDomains);
+        VL_RESTORER_CLEAR(m_addedCaches);
+        VL_RESTORER_CLEAR(m_virtualCalls);
         m_cfuncp = nodep;
         iterateChildren(nodep);
     }
