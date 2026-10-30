@@ -766,20 +766,6 @@ class RandomizeMarkVisitor final : public VNVisitor {
                 UASSERT_OBJ(constp->num().isNull(), constp,
                             "Non-null AstConst arg to randomize() should have been "
                             "rejected by V3Width");
-                // SMT pin only handles scalars; nested-class constraints don't cascade.
-                const bool hasUnsupportedMember
-                    = classp->existsMember([](const AstClass*, const AstVar* memberVarp) {
-                          if (!memberVarp->rand().isRandomizable()) return false;
-                          const AstNodeDType* const dtp = memberVarp->dtypep()->skipRefp();
-                          return VN_IS(dtp, UnpackArrayDType) || VN_IS(dtp, DynArrayDType)
-                                 || VN_IS(dtp, QueueDType) || VN_IS(dtp, AssocArrayDType)
-                                 || VN_IS(dtp, WildcardArrayDType) || VN_IS(dtp, ClassRefDType);
-                      });
-                if (hasUnsupportedMember) {
-                    nodep->v3warn(E_UNSUPPORTED,
-                                  "Unsupported: 'randomize(null)' on class with rand "
-                                  "container or class member");
-                }
                 continue;
             }
             classp->user1(IS_RANDOMIZED_INLINE);
@@ -4049,6 +4035,12 @@ class RandomizeVisitor final : public VNVisitor {
     std::map<AstClass*, std::pair<bool, bool>>
         m_prePostWrap;  // Per-handle-type pre/post virtual wrapper presence
     uint32_t m_uniqueConstraintId = 0;  // current ID of unique call
+    // Methods implementing randomize(null), see addRandomizeNullBody
+    enum class NullPhase : uint8_t { NONE, ENTRY, PRE, CHECK, POST };
+    std::vector<std::tuple<AstClass*, NullPhase, AstFunc*>>
+        m_randomizeNullFuncs;  // randomize(null) methods, body added after lowering
+    std::map<AstClass*, std::vector<AstClass*>> m_derivedClasses;  // Directly derived classes
+    NullPhase m_nullPhase = NullPhase::NONE;  // Building a randomize(null) method
 
     // METHODS
     // Check if two nodes are semantically equivalent (not pointer equality):
@@ -4717,8 +4709,10 @@ class RandomizeVisitor final : public VNVisitor {
             return newRandStmtsp(fl, exprp, nullptr, outputVarp, offset, firstMemberp);
         } else if (const AstClassRefDType* const classRefDtp = VN_CAST(memberDtp, ClassRefDType)) {
             AstFunc* const memberFuncp
-                = V3Randomize::newRandomizeFunc(m_memberMap, classRefDtp->classp());
-            AstMethodCall* const callp = new AstMethodCall{fl, exprp, "randomize"};
+                = m_nullPhase != NullPhase::NONE
+                      ? getCreateRandomizeNullFunc(classRefDtp->classp(), m_nullPhase)
+                      : V3Randomize::newRandomizeFunc(m_memberMap, classRefDtp->classp());
+            AstMethodCall* const callp = new AstMethodCall{fl, exprp, memberFuncp->name()};
             callp->taskp(memberFuncp);
             callp->dtypeFrom(memberFuncp);
             AstAssign* const assignp = new AstAssign{
@@ -5441,7 +5435,8 @@ class RandomizeVisitor final : public VNVisitor {
                 targetClassp = VN_CAST(m_modp, Class);
             }
             UASSERT_OBJ(targetClassp, nodep, "randomize(null) target class unresolved");
-            AstFunc* const checkOnlyFuncp = getCreateRandomizeNullFunc(targetClassp);
+            AstFunc* const checkOnlyFuncp
+                = getCreateRandomizeNullFunc(targetClassp, NullPhase::ENTRY);
             nodep->name(checkOnlyFuncp->name());
             nodep->taskp(checkOnlyFuncp);
             nodep->dtypeFrom(checkOnlyFuncp->dtypep());
@@ -5460,35 +5455,72 @@ class RandomizeVisitor final : public VNVisitor {
         }
     }
 
-    // Create a class method `__Vrandomize_null` that implements the IEEE
-    // 1800-2023 18.11 semantic: validate all declared constraints against the
-    // current runtime values without assigning new ones. Body is:
-    //   1. pre_randomize() -- always (IEEE 1800-2023 18.6.2; 18.11 has no
-    //      carve-out for the null case).
-    //   2. Compute result:
-    //      - no constraints: `fvar = 1` (trivially satisfied; IEEE 18.11.1).
-    //      - has constraints: clear solver constraints, re-run
-    //        `__Vsetup_constraints`, then `fvar = gen.next_check_only(rng)`.
-    //   3. if (fvar) post_randomize() -- IEEE 1800-2023 18.6.3 says
-    //      post_randomize is not called when randomize() fails.
-    AstFunc* getCreateRandomizeNullFunc(AstClass* const classp) {
-        static constexpr const char* const name = "__Vrandomize_null";
+    // Get or create a randomize(null) method; its body is added by addRandomizeNullBody.
+    AstFunc* getCreateRandomizeNullFunc(AstClass* const classp, const NullPhase phase) {
+        static constexpr const char* const names[]
+            = {"", "__Vrandomize_null", "__Vrandomize_null_pre", "__Vrandomize_null_check",
+               "__Vrandomize_null_post"};
+        const char* const name = names[static_cast<int>(phase)];
         if (AstFunc* const existingp = VN_AS(m_memberMap.findMember(classp, name), Func)) {
             return existingp;
         }
-        FileLine* const fl = classp->fileline();
         AstFunc* const funcp = V3Randomize::newRandomizeFunc(m_memberMap, classp, name);
+        m_randomizeNullFuncs.emplace_back(classp, phase, funcp);
+        return funcp;
+    }
+    // Build the body of a randomize(null) method
+    void addRandomizeNullBody(AstClass* const classp, const NullPhase phase,
+                              AstFunc* const funcp) {
+        // Implements IEEE 1800-2023 18.11.1: check all constraints, including those of rand
+        // member objects, against the current values without assigning new ones. As for
+        // randomize() (18.6.2), pre_randomize() of the object and its active member objects
+        // is called first, and post_randomize() last, only if the check succeeds (18.6.3).
+        // ENTRY (the randomize(null) call) does PRE, CHECK, then POST if CHECK returned 1;
+        // each of these phases also calls the same phase on the member objects.
+        FileLine* const fl = classp->fileline();
         AstVar* const fvarp = VN_AS(funcp->fvarp(), Var);
-
-        // 1. pre_randomize -- always
-        addPrePostCall(classp, funcp, "pre_randomize");
-
-        // 2. Compute result
+        const auto setResult = [&](AstNodeExpr* const valp) {
+            funcp->addStmtsp(new AstAssign{fl, new AstVarRef{fl, fvarp, VAccess::WRITE}, valp});
+        };
+        const auto callPhase = [&](NullPhase calledPhase) {
+            return new AstFuncRef{fl, getCreateRandomizeNullFunc(classp, calledPhase)};
+        };
+        if (phase == NullPhase::ENTRY) {  // PRE and POST return 1
+            setResult(callPhase(NullPhase::PRE));
+            setResult(callPhase(NullPhase::CHECK));
+            funcp->addStmtsp(new AstIf{fl, new AstVarRef{fl, fvarp, VAccess::READ},
+                                       new AstAssign{fl, new AstVarRef{fl, fvarp, VAccess::WRITE},
+                                                     callPhase(NullPhase::POST)}});
+            return;
+        }
+        // Virtual, so an object of a derived class is checked by its own methods
+        for (AstClass* const derivedp : m_derivedClasses[classp])
+            getCreateRandomizeNullFunc(derivedp, phase);
+        if (phase == NullPhase::PRE) addPrePostCall(classp, funcp, "pre_randomize");
         AstVar* const classGenp = getRandomGenerator(classp);
-        if (!classGenp) {
-            funcp->addStmtsp(new AstAssign{fl, new AstVarRef{fl, fvarp, VAccess::WRITE},
-                                           new AstConst{fl, AstConst::WidthedValue{}, 32, 1}});
+        if (phase != NullPhase::CHECK || !classGenp) {
+            setResult(new AstConst{fl, AstConst::WidthedValue{}, 32, 1});
         } else {
+            // Register the variables as new() and randomize() do, so arrays have their current
+            // elements, and set the size variables the solver checks array sizes with
+            VInsertionSet<AstVar*> sizedArrays;
+            for (AstClass* cp = classp; cp;
+                 cp = cp->extendsp() ? cp->extendsp()->classp() : nullptr) {
+                copyVariableRegistrations(VN_AS(m_memberMap.findMember(cp, "new"), Func), funcp);
+                for (AstVar* const arrVarp : m_sizeConstrainedArrays[cp])
+                    sizedArrays.insert(arrVarp);
+            }
+            // Arrays with only a size constraint, and arrays of member objects, also have one
+            MemberArrays memberArrays;
+            addResizedArrays(classp, sizedArrays, memberArrays);
+            for (AstVar* const arrVarp : sizedArrays)
+                funcp->addStmtsp(newSizeVarAssign(fl, arrVarp));
+            for (const auto& pathMsel : memberArrays) {
+                const AstMemberSel* const mselp = pathMsel.second;
+                funcp->addStmtsp(newSizeVarAssign(fl, mselp->varp(), mselp));
+            }
+            copyVariableRegistrations(VN_AS(m_memberMap.findMember(classp, "randomize"), Func),
+                                      funcp);
             AstNodeModule* const genModp = VN_AS(classGenp->user2p(), NodeModule);
             funcp->addStmtsp(implementConstraintsClear(fl, classGenp));
             AstTask* const setupAllTaskp = getCreateConstraintSetupFunc(classp, m_memberMap);
@@ -5497,19 +5529,23 @@ class RandomizeVisitor final : public VNVisitor {
             solverCallp->dtypeSetBit();
             solverCallp->add(new AstVarRef{fl, genModp, classGenp, VAccess::READWRITE});
             solverCallp->add(".next_check_only(__Vm_rng)");
-            funcp->addStmtsp(
-                new AstAssign{fl, new AstVarRef{fl, fvarp, VAccess::WRITE}, solverCallp});
+            setResult(solverCallp);
             classp->needRNG(true);
         }
-
-        // 3. post_randomize -- only if result is non-zero
-        if (AstTask* const userPostp = findPrePostTask(classp, "post_randomize")) {
-            AstTaskRef* const callp = new AstTaskRef{userPostp->fileline(), userPostp};
-            funcp->addStmtsp(
-                new AstIf{fl, new AstVarRef{fl, fvarp, VAccess::READ}, callp->makeStmt()});
+        {
+            VL_RESTORER(m_nullPhase);
+            m_nullPhase = phase;
+            classp->foreachMember([&](AstClass* const ownerClassp, AstVar* const memberVarp) {
+                if (!memberVarp->rand().isRandomizable()) return;
+                if (!VN_IS(arrayElementDTypep(memberVarp->dtypep()), ClassRefDType)) return;
+                AstVarRef* const refp = new AstVarRef{fl, ownerClassp, memberVarp, VAccess::READ};
+                AstNodeStmt* const stmtp = newRandStmtsp(fl, refp, nullptr, fvarp);
+                funcp->addStmtsp(wrapIfRandMode(
+                    classp, memberVarp,
+                    new AstBegin{fl, m_uniqueNames.get("__VrandBlock"), stmtp, false}));
+            });
         }
-
-        return funcp;
+        if (phase == NullPhase::POST) addPrePostCall(classp, funcp, "post_randomize");
     }
 
     // Rewrite a LogIf-of-Dist chain into nested AstConstraintIf. The outermost
@@ -6123,11 +6159,9 @@ class RandomizeVisitor final : public VNVisitor {
         return pinp->makeStmt();
     }
 
-    void addFrozenSizePin(FileLine* const fl, AstVar* const arrVarp, AstFunc* const randomizep,
-                          AstVar* const genp, AstVar* const randModeVarp,
-                          const AstMemberSel* const mselp = nullptr) {
-        const RandomizeMode rmode = {.asUQuad = arrVarp->user1()};
-        if (!rmode.usesMode) return;
+    // Assign the current size of a size-constrained array to its size variable
+    AstAssign* newSizeVarAssign(FileLine* const fl, AstVar* const arrVarp,
+                                const AstMemberSel* const mselp = nullptr) const {
         AstVar* const sizeVarp = sizeVarOf(arrVarp, mselp);
         const VCMethod sizeMethod = VN_IS(arrVarp->dtypep()->skipRefp(), AssocArrayDType)
                                         ? VCMethod::ASSOC_SIZE
@@ -6135,8 +6169,15 @@ class RandomizeVisitor final : public VNVisitor {
         AstCMethodHard* const currentSizep = new AstCMethodHard{
             fl, newSiblingRefp(fl, arrVarp, mselp, VAccess::READ), sizeMethod};
         currentSizep->dtypep(sizeVarp->dtypep());
-        randomizep->addStmtsp(
-            new AstAssign{fl, newSiblingRefp(fl, sizeVarp, mselp, VAccess::WRITE), currentSizep});
+        return new AstAssign{fl, newSiblingRefp(fl, sizeVarp, mselp, VAccess::WRITE),
+                             currentSizep};
+    }
+    void addFrozenSizePin(FileLine* const fl, AstVar* const arrVarp, AstFunc* const randomizep,
+                          AstVar* const genp, AstVar* const randModeVarp,
+                          const AstMemberSel* const mselp = nullptr) {
+        const RandomizeMode rmode = {.asUQuad = arrVarp->user1()};
+        if (!rmode.usesMode) return;
+        randomizep->addStmtsp(newSizeVarAssign(fl, arrVarp, mselp));
         AstNodeExpr* const modep = newModeBitRead(arrVarp, mselp, randModeVarp, fl);
         randomizep->addStmtsp(
             new AstIf{fl, new AstLogNot{fl, modep}, newPinSizeVariable(fl, arrVarp, genp, mselp)});
@@ -7328,6 +7369,16 @@ public:
         });
 
         iterate(nodep);
+        nodep->foreach([&](AstClass* const classp) {
+            if (classp->extendsp())
+                m_derivedClasses[classp->extendsp()->classp()].push_back(classp);
+        });
+        // Grows while the methods of member objects and derived classes are created
+        for (size_t i = 0; i < m_randomizeNullFuncs.size(); ++i) {
+            addRandomizeNullBody(std::get<0>(m_randomizeNullFuncs[i]),
+                                 std::get<1>(m_randomizeNullFuncs[i]),
+                                 std::get<2>(m_randomizeNullFuncs[i]));
+        }
         nodep->foreach([&](AstConstraint* constrp) {
             VL_DO_DANGLING(pushDeletep(constrp->unlinkFrBack()), constrp);
         });
