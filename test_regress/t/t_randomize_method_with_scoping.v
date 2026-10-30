@@ -104,11 +104,28 @@ class SubC extends SubB;
   endfunction
 endclass
 
+class RandX;
+  rand int x;
+endclass
+
+module sub_v;
+  int v = 3;
+endmodule
+
 module t;
   SubC obj = new;
+  sub_v u ();
+
+  // A hierarchical reference after 'local::', in a task
+  task automatic check_local_hier();
+    RandX r = new;
+    if (r.randomize() with { x == local::u.v; } != 1) $stop;
+    if (r.x != 3) $stop;
+  endtask
 
   initial begin
     if (obj.doit != 1) $stop;
+    check_local_hier();
     $write("*-* All Finished *-*\n");
     $finish;
   end
