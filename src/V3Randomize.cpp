@@ -6438,6 +6438,13 @@ class RandomizeVisitor final : public VNVisitor {
                 for (AstVar* const arrVarp : m_sizeConstrainedArrays[cp])
                     funcp->addStmtsp(newSizeVarAssign(fl, arrVarp));
             }
+            VInsertionSet<AstVar*> resizedArrays;
+            MemberArrays memberArrays;
+            addResizedArrays(classp, resizedArrays, memberArrays);
+            for (const auto& pathMsel : memberArrays) {
+                const AstMemberSel* const mselp = pathMsel.second;
+                funcp->addStmtsp(newSizeVarAssign(fl, mselp->varp(), mselp));
+            }
             copyVariableRegistrations(VN_AS(m_memberMap.findMember(classp, "randomize"), Func),
                                       funcp);
             AstNodeModule* const genModp = VN_AS(classGenp->user2p(), NodeModule);
