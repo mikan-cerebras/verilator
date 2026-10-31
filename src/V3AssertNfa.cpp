@@ -315,6 +315,27 @@ static AstNodeStmt* newIfAssertFailOn(AstNode* bodyp, VAssertDirectiveType direc
     return ifp;
 }
 
+// Return the fail action of an assertion without one
+static AstNode* newDefaultFailp(FileLine* flp, AstNodeModule* modp, const string& message) {
+    // V3Assert turns the DT_ERROR display into the standard "Assertion failed in %m"
+    AstDisplay* const dispp
+        = new AstDisplay{flp, VDisplayType::DT_ERROR, message, nullptr, nullptr};
+    dispp->fmtp()->timeunit(modp->timeunit());
+    AstNode* const stmtsp = dispp;
+    if (v3Global.opt.stopFail()) stmtsp->addNext(new AstStop{flp, false});
+    return stmtsp;
+}
+
+// Prepend stmtsp to the fail action, keeping the default one of an assertion without 'else'
+static void prependFailAction(AstAssert* assertp, AstNodeModule* modp, AstNode* stmtsp) {
+    // Without 'else', a failure calls $error (IEEE 1800-2023 16.14.1), which V3Assert adds only
+    // to an assertion with no fail action
+    if (!assertp->failsp()) {
+        assertp->addFailsp(newDefaultFailp(assertp->fileline(), modp, "'assert' failed."));
+    }
+    assertp->prependFailsp(stmtsp);
+}
+
 //######################################################################
 // NFA Builder
 
@@ -3342,12 +3363,7 @@ public:
                 dlyp->fileline(newfl);
             });
         } else {
-            // V3Assert turns the DT_ERROR display into the standard "Assertion failed in %m"
-            AstDisplay* const dispp
-                = new AstDisplay{flp, VDisplayType::DT_ERROR, "", nullptr, nullptr};
-            dispp->fmtp()->timeunit(m_modp->timeunit());
-            stmtsp = dispp;
-            if (v3Global.opt.stopFail()) stmtsp->addNext(new AstStop{flp, false});
+            stmtsp = newDefaultFailp(flp, m_modp, "");
         }
         // Like a failure during simulation, subject to $assertcontrol FailOff
         return newIfAssertFailOn(stmtsp, assertp->directive(), assertp->userType());
@@ -3936,8 +3952,8 @@ class AssertNfaVisitor final : public VNVisitor {
         return !hasMultiCycleExpr(parts.triggerExprp);
     }
 
-    static void splitImplicationPassActions(AstAssert* assertp, const PropertyParts& parts,
-                                            AstNodeExpr* nonvacuousMatchp) {
+    void splitImplicationPassActions(AstAssert* assertp, const PropertyParts& parts,
+                                     AstNodeExpr* nonvacuousMatchp) {
         FileLine* const flp = assertp->fileline();
 
         AstNode* const passsp = assertp->passsp()->unlinkFrBackWithNext();
@@ -3957,7 +3973,7 @@ class AssertNfaVisitor final : public VNVisitor {
         splitsp = splitsp ? AstNode::addNext<AstNode, AstNode>(splitsp, nonvacuousp)
                           : static_cast<AstNode*>(nonvacuousp);
         // Another attempt failing on the same tick runs the fail action instead
-        assertp->prependFailsp(splitsp->cloneTree(true));
+        prependFailAction(assertp, m_modp, splitsp->cloneTree(true));
         assertp->addPasssp(splitsp);
     }
 
@@ -4102,7 +4118,7 @@ class AssertNfaVisitor final : public VNVisitor {
             assertp->addPasssp(ifp);
             // Fail-handler prefix for overlapping instances (IEEE 16.12):
             // fires when reject=1 && match=1 in the same cycle.
-            assertp->prependFailsp(ifp->cloneTree(false));
+            prependFailAction(assertp, m_modp, ifp->cloneTree(false));
         }
     }
 
