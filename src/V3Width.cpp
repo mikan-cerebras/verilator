@@ -299,7 +299,7 @@ class WidthVisitor final : public VNVisitor {
     bool m_hasSExpr = false;  // Property has a sequence expression
     bool m_underDisableIff = false;  // Visiting under a disable iff condition
     bool m_underSampledArg = false;  // Visiting under a sampled value function argument
-    std::unordered_set<const AstVar*> m_propLocalVarps;  // Local variables of current property
+    std::unordered_set<const AstVar*> m_propLocalVarps;  // Local variables of property/sequence
     const AstCell* m_cellp = nullptr;  // Current cell for arrayed instantiations
     std::vector<AstVar*> m_splitIfaceArrayVarps;  // Interface arrays split by V3Param
     const AstEnumItem* m_enumItemp = nullptr;  // Current enum item
@@ -8875,9 +8875,16 @@ class WidthVisitor final : public VNVisitor {
         m_cycleDelayPropp = nullptr;
         m_underSvaExpr = true;
         m_underConcAssert = true;
+        VL_RESTORER(m_underDisableIff);
+        m_underDisableIff = false;
+        VL_RESTORER(m_underSampledArg);
+        m_underSampledArg = false;
+        VL_RESTORER_CLEAR(m_propLocalVarps);
         nodep->dtypeSetBit();
         for (AstNode *stmtp = nodep->stmtsp(), *nextp; stmtp; stmtp = nextp) {
             nextp = stmtp->nextp();  // The body may be replaced, e.g. a SelBit
+            const AstVar* const varp = VN_CAST(stmtp, Var);
+            if (varp && !varp->isIO()) m_propLocalVarps.emplace(varp);
             if (const AstInitialStaticStmt* const initp = VN_CAST(stmtp, InitialStaticStmt)) {
                 // A declaration without an initializer only resets the variable
                 initp->foreach([](const AstAssign* assignp) {
