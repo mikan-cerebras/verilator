@@ -1139,11 +1139,12 @@ class SvaNfaBuilder final {
             [](const AstSConsRep* repp) { return getConstUInt(repp->countp()) == 0; });
     }
 
-    // True if a leaf's condition has no implication or multi-cycle sequence in it
+    // True if a leaf's condition has no implication, s_eventually or multi-cycle sequence in it
     // (a leaf can be e.g. 'not (x |-> y)')
     static bool isPlainBoolean(const AstNodeExpr* condp) {
-        return !condp->exists(
-            [](const AstNodeExpr* np) { return np->isMultiCycleSva() || VN_IS(np, Implication); });
+        return !condp->exists([](const AstNodeExpr* np) {
+            return np->isMultiCycleSva() || VN_IS(np, Implication) || VN_IS(np, SEventually);
+        });
     }
     // Build `b or p` at the end of an asserted property, with b boolean
     BuildResult buildBoolOrProp(AstNodeExpr* boolp, AstNodeExpr* propp, SvaStateVertex* entryVtxp,
