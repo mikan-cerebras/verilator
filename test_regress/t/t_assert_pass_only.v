@@ -30,6 +30,7 @@ module t;
   assert property (@(posedge clk) ok) passes++;
   assume property (@(posedge clk) ok) passes++;
   assert property (@(posedge clk) 1 ##1 ok) passes++;
+  assert property (@(posedge clk) 1 |-> 1 ##1 ok) passes++;
   assert property (@(posedge clk) ok) passes++;
   else;
   assert property (@(posedge clk) ok)
@@ -56,8 +57,9 @@ module t;
     #30 $assertfailoff;
     #20;
     // Ticks at cyc 0..4 for the always and the plain concurrent assertions (each passing on
-    // 3); cyc 0..3 for the sequence, whose attempts check cyc 1..4 (passing on 2)
-    `checkd(passes, 3 * 9 + 2);
+    // 3); cyc 0..3 for the sequence and the implication, whose attempts check cyc 1..4
+    // (passing on 2)
+    `checkd(passes, 3 * 9 + 2 * 2);
     $write("*-* All Finished *-*\n");
     $finish;
   end
