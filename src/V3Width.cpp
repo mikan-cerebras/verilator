@@ -9549,8 +9549,9 @@ class WidthVisitor final : public VNVisitor {
               || VN_IS(nodep, SOr) || VN_IS(nodep, SIntersect) || VN_IS(nodep, SThroughout)
               || VN_IS(nodep, SWithin) || VN_IS(nodep, SConsRep) || VN_IS(nodep, SGotoRep)
               || VN_IS(nodep, SNonConsRep) || VN_IS(nodep, SEventually) || VN_IS(nodep, PropAlways)
-              || VN_IS(nodep, AbortOn) || VN_IS(nodep, SClocked) || VN_IS(nodep, ExprStmt)
-              || VN_IS(nodep, LogNot) || VN_IS(nodep, LogOr) || VN_IS(nodep, LogEq);
+              || VN_IS(nodep, AbortOn) || VN_IS(nodep, SClocked) || VN_IS(nodep, SStrength)
+              || VN_IS(nodep, ExprStmt) || VN_IS(nodep, LogNot) || VN_IS(nodep, LogOr)
+              || VN_IS(nodep, LogEq);
         for (const AstNode* const childp :
              {nodep->op1p(), nodep->op2p(), nodep->op3p(), nodep->op4p()}) {
             for (const AstNode* itemp = childp; itemp; itemp = itemp->nextp()) {
