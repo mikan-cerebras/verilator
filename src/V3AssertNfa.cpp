@@ -2911,9 +2911,16 @@ class SvaNfaLowering final {
 
         // Exact counts always count failures, from zero
         if (c.exactCounts) sigs.threadFailCountp = newTypedConstp(c.flp, m_u32DTypep, 0);
-        // Each terminal thread fails when the final condition is false.
+        // Each terminal thread fails when the final condition is false. A final condition with
+        // a future value function is only known one global clock tick later (see
+        // unloweredFuturep), so its failures are not counted: several on one tick run the fail
+        // action once.
         AstNodeExpr* terminalCountp = nullptr;
-        const bool needTerminalCount = needRejectCount && c.matchCondp;
+        const bool needTerminalCount
+            = needRejectCount && c.matchCondp && !c.matchCondp->exists([](const AstNode* np) {
+                  return VN_IS(np, Future) || VN_IS(np, Rising) || VN_IS(np, Falling)
+                         || VN_IS(np, Steady);
+              });
         computeTerminalMatchAndReject(c, sigs, needMatchCount,
                                       needTerminalCount ? &terminalCountp : nullptr);
         if (terminalCountp) {
