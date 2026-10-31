@@ -1613,6 +1613,11 @@ class WidthVisitor final : public VNVisitor {
         AstNode* const selp = V3Width::widthSelNoIterEdit(nodep);
         if (selp != nodep) {
             VL_DANGLING(nodep);
+            if (AstCMethodHard* const methodp = VN_CAST(selp, CMethodHard)) {
+                // Element of a dynamic array or queue, which visit(AstCMethodHard) won't revisit
+                iterateCheck(methodp, "Bit select", methodp->pinsp(), SELF, FINAL,
+                             methodp->pinsp()->dtypep(), EXTEND_EXP);
+            }
             userIterate(selp, m_vup);
             return;
         }
