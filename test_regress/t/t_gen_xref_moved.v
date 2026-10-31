@@ -24,7 +24,7 @@
     C c = new; \
     covergroup cg @(posedge t.clk); cp : coverpoint X {bins b[] = {[0 : 7]};} endgroup \
     cg cov = new; \
-    always @(negedge t.clk) ncov <= int'(cov.get_coverage()); \
+    always @(negedge t.clk) ncov <= int'(cov.get_inst_coverage()); \
     always @(posedge t.clk) if (t.cyc > 1 && $past(X) != X) npast++; \
     always @(posedge t.clk) if ($rose(X[0])) nrose++; \
     always @(posedge t.clk) if (c.get() == 2) ncls++; \
