@@ -82,9 +82,10 @@ interface ifc (
   else outer_fails++;
   assert property (@(posedge clk) a |-> c == b)
   else ref_outer_fails++;
-  // A method called on a class handle of the interface
+  // A method called on a class handle of the interface; static, as a concurrent assertion
+  // shall not reference a non-static class member (IEEE 1800-2023 16.6)
   class Cls;
-    function automatic logic inv(logic x);
+    static function automatic logic inv(logic x);
       return !x;
     endfunction
   endclass
