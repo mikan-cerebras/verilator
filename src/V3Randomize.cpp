@@ -4803,7 +4803,6 @@ class RandomizeVisitor final : public VNVisitor {
     NullPhase m_nullPhase = NullPhase::NONE;  // Building a randomize(null) method
     std::map<const AstConstraint*, std::vector<ConstraintFuncCall>>
         m_constraintFuncCalls;  // Items of each constraint calling functions with random args
-    std::map<const AstClass*, std::vector<AstClass*>> m_extendedBy;  // Directly derived classes
 
     // METHODS
     // Check if two nodes are semantically equivalent (not pointer equality):
@@ -7415,7 +7414,7 @@ class RandomizeVisitor final : public VNVisitor {
         // The constraint setup is virtual, so 'randomize() with' through a base class handle
         // adds the constraints of the object's class
         std::vector<ConstraintFuncCall> calls;
-        for (AstClass* const derivedp : m_extendedBy[classp]) {
+        for (AstClass* const derivedp : m_derivedClasses[classp]) {
             if (derivedp->user1()) {
                 // Lower its constraints first; that resets the per-class written variables
                 VL_RESTORER_COPY(m_writtenVars);
@@ -8725,7 +8724,9 @@ public:
         // of its type still randomizes it (issue #7833); a class-typed sub-object
         // is skipped so its own members are still basic-randomized.
         nodep->foreach([&](AstClass* const classp) {
-            if (classp->extendsp()) m_extendedBy[classp->extendsp()->classp()].push_back(classp);
+            if (classp->extendsp()) {
+                m_derivedClasses[classp->extendsp()->classp()].push_back(classp);
+            }
             if (!classp->user1()) return;
             classp->foreachMember([&](AstClass* const ownerClassp, AstConstraint* const constrp) {
                 constrp->foreach([&](AstMemberSel* const memberSelp) {
@@ -8738,10 +8739,6 @@ public:
         });
 
         iterate(nodep);
-        nodep->foreach([&](AstClass* const classp) {
-            if (classp->extendsp())
-                m_derivedClasses[classp->extendsp()->classp()].push_back(classp);
-        });
         // Grows while the methods of member objects and derived classes are created
         for (size_t i = 0; i < m_randomizeNullFuncs.size(); ++i) {
             addRandomizeNullBody(std::get<0>(m_randomizeNullFuncs[i]),
