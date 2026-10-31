@@ -209,7 +209,7 @@ module t;
       `checkd(h.items[0].val, 30)
       // Non-random property, element of a member queue, member queue size
       randomize_result = h.randomize() with {
-        x == items[fitems[0].val - 'h55 + idx].nr;
+        x == items[{25'd0, fitems[0].val} - 'h55 + idx].nr;
         x == 60 + 2 * local::pos;
       };
       `checkd(randomize_result, 1)
