@@ -23,6 +23,10 @@ module t;
   wire ok = cyc != 2 && cyc != 4;
 
   int passes = 0;
+  // A deferred assertion action is a subroutine call (IEEE 1800-2023 16.4)
+  function void pass();
+    passes++;
+  endfunction
   assert property (@(posedge clk) ok) passes++;
   assume property (@(posedge clk) ok) passes++;
   assert property (@(posedge clk) 1 ##1 ok) passes++;
@@ -36,13 +40,13 @@ module t;
   always @(posedge clk) begin
     assert (ok) passes++;
     assume (ok) passes++;
-    assert #0 (ok) passes++;
-    assert final (ok) passes++;
+    assert #0 (ok) pass();
+    assert final (ok) pass();
     assert (ok) passes++;
     else;
     assert (ok)
     else;
-    assert #0 (ok) passes++;
+    assert #0 (ok) pass();
     else;
     assert final (ok)
     else;
