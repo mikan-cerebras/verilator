@@ -540,8 +540,11 @@ V3AssertCommon::newSvaLocalVars(const AstNodeFTask* ftaskp, AstNodeModule* modp,
     for (const AstNode* const stmtp : ftaskp->stmtspList()) {
         const AstVar* const varp = VN_CAST(stmtp, Var);
         if (!varp || varp->isIO()) continue;
+        // An XTEMP stays one, see isMatchItem in V3AssertNfa
+        const VVarType varType
+            = varp->varType() == VVarType::XTEMP ? VVarType::XTEMP : VVarType::MODULETEMP;
         AstVar* const newVarp
-            = new AstVar{varp->fileline(), VVarType::MODULETEMP, names.get(varp), varp->dtypep()};
+            = new AstVar{varp->fileline(), varType, names.get(varp), varp->dtypep()};
         newVarp->lifetime(VLifetime::STATIC_EXPLICIT);
         modp->addStmtsp(newVarp);
         localVarMap[varp] = newVarp;
