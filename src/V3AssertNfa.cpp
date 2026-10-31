@@ -1152,6 +1152,18 @@ class SvaNfaBuilder final {
         // It holds at once when b holds and otherwise exactly when p does (IEEE 1800-2023
         // 16.12.4). So p is evaluated only when b is false, with the rejections of a top-level
         // property.
+        // In a negated property, a success through b would not be counted with the vacuous
+        // successes of an implication in p, which fail it too.
+        const AstImplication* implp = nullptr;
+        propp->exists([&implp](const AstImplication* np) {
+            if (!np->isFollowedBy()) implp = np;
+            return implp != nullptr;
+        });
+        if (m_trackVacuous && implp) {
+            implp->v3warn(E_UNSUPPORTED, "Unsupported: implication inside another property "
+                                         "operator in a negated property");
+            return BuildResult::failWithError();
+        }
         SvaStateVertex* const propEntryp = scopedCreateVertex();
         guardedLink(entryVtxp, propEntryp,
                     new AstLogNot{flp, sampled(boolp->cloneTreePure(false))}, flp);
