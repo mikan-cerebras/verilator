@@ -207,14 +207,41 @@ class AwaitVisitor final : public VNVisitor {
     struct CFuncCache final {
         std::set<AstSenTree*> m_processDomains;  // Sentrees awaited
         std::set<AstVarScope*> m_writtenBySuspendable;  // Variables written
-        std::set<const CFuncCache*> m_callees;  // Caches of the functions called
+        std::set<CFuncCache*> m_callees;  // Caches of the functions called
         bool m_visited = false;  // Whether the members are set
+        // Strongly connected component (SCC) of the call graph, see visitScc()
+        int m_sccIndex = -1;  // Order in the search, -1 if not visited yet
+        int m_sccLowLink = 0;  // Lowest order reachable in the search
+        bool m_onSccStack = false;  // Whether on m_sccStack
+        size_t m_scc = 0;  // Index of its SCC in m_sccs
     };
     CFuncCache* m_cachep = nullptr;  // Cache of the current process or called function
     // Caches of called functions, by value of m_gatherVars
     AstUser1Allocator<AstCFunc, std::array<CFuncCache, 2>> m_cfuncsCache;
     // Caches of virtual calls, calling each possible function, by called function and m_gatherVars
     std::map<std::pair<const AstCFunc*, bool>, CFuncCache> m_virtualCallsCache;
+    using DomainSet = std::set<AstSenTree*>;
+    using CalleeSet = std::set<CFuncCache*>;
+    std::set<DomainSet> m_domainSets;  // Distinct sets of sentrees, shared
+    std::set<CalleeSet> m_calleeSets;  // Distinct caches called by processes
+    struct Scc final {
+        std::vector<CFuncCache*> m_members;  // Caches in the SCC
+        const DomainSet* m_reachedp = nullptr;  // Sentrees awaited, directly or not
+        // Sentrees of the processes reaching the SCC, directly or not
+        std::set<const DomainSet*> m_callerDomainps;
+    };
+    std::vector<Scc> m_sccs;  // SCCs of caches called by processes, callees first
+    std::vector<CFuncCache*> m_sccStack;  // Caches visited, not in an SCC yet
+    int m_sccNextIndex = 0;  // Order of the next cache visited
+    // What the processes writing a variable, or calling a cache, call and await directly
+    struct Writers final {
+        std::set<const CalleeSet*> m_calleeSets;  // Caches called
+        std::set<const DomainSet*> m_domainSets;  // Sentrees awaited directly
+    };
+    std::unordered_map<AstVarScope*, Writers> m_varWriters;  // Writers by variable written
+    std::unordered_map<CFuncCache*, Writers> m_calleeWriters;  // Writers by cache called
+    // Sentrees reached from the caches called by processes, by distinct caches called
+    std::unordered_map<const CalleeSet*, const DomainSet*> m_calleeSetDomains;
     // Count uses of not inlined writes to signals in suspendables
     VDouble0 m_notInlinedWritesInSuspendableUsage;
 
@@ -232,25 +259,107 @@ class AwaitVisitor final : public VNVisitor {
             resumep->addPinsp(pinsp->cloneTree(false));
         }
     }
-    // Add the values of every function the process calls, directly or not, to the process cache
-    void addCalledValues(CFuncCache& procCache) {
-        // Walk the call graph instead of caching the values reachable from each function, which
-        // takes memory of the number of functions times the number of variables they reach
-        std::unordered_set<const CFuncCache*> visited;
-        std::vector<const CFuncCache*> stack{procCache.m_callees.begin(),
-                                             procCache.m_callees.end()};
-        while (!stack.empty()) {
-            const CFuncCache* const cachep = stack.back();
-            stack.pop_back();
-            if (!visited.insert(cachep).second) continue;
-            const size_t initialSize = procCache.m_writtenBySuspendable.size();
-            procCache.m_writtenBySuspendable.insert(cachep->m_writtenBySuspendable.begin(),
-                                                    cachep->m_writtenBySuspendable.end());
-            m_notInlinedWritesInSuspendableUsage
-                += procCache.m_writtenBySuspendable.size() - initialSize;
-            procCache.m_processDomains.insert(cachep->m_processDomains.begin(),
-                                              cachep->m_processDomains.end());
-            stack.insert(stack.end(), cachep->m_callees.begin(), cachep->m_callees.end());
+    // Return a shared set of the sentrees in 'domains' and in the given sets
+    const DomainSet* unionDomains(DomainSet domains, const std::set<const DomainSet*>& domainps) {
+        if (domains.empty() && domainps.size() == 1) return *domainps.begin();
+        for (const DomainSet* const domainsp : domainps) {
+            domains.insert(domainsp->begin(), domainsp->end());
+        }
+        return &*m_domainSets.insert(std::move(domains)).first;
+    }
+    // Add the SCCs of a cache and of the caches it calls, with the sentrees they reach
+    void visitScc(CFuncCache* const cachep) {
+        // Tarjan's algorithm. An SCC is complete after all the SCCs it calls, so it gets the
+        // sentrees they reach once, instead of each caller walking the call graph again
+        cachep->m_sccIndex = cachep->m_sccLowLink = m_sccNextIndex++;
+        m_sccStack.push_back(cachep);
+        cachep->m_onSccStack = true;
+        for (CFuncCache* const calleep : cachep->m_callees) {
+            if (calleep->m_sccIndex < 0) {
+                visitScc(calleep);
+                cachep->m_sccLowLink = std::min(cachep->m_sccLowLink, calleep->m_sccLowLink);
+            } else if (calleep->m_onSccStack) {
+                cachep->m_sccLowLink = std::min(cachep->m_sccLowLink, calleep->m_sccIndex);
+            }
+        }
+        if (cachep->m_sccLowLink != cachep->m_sccIndex) return;
+        const size_t scc = m_sccs.size();
+        m_sccs.emplace_back();
+        CFuncCache* memberp;
+        do {
+            memberp = m_sccStack.back();
+            m_sccStack.pop_back();
+            memberp->m_onSccStack = false;
+            memberp->m_scc = scc;
+            m_sccs[scc].m_members.push_back(memberp);
+        } while (memberp != cachep);
+        DomainSet domains;
+        std::set<const DomainSet*> calleeDomainps;
+        for (const CFuncCache* const sccMemberp : m_sccs[scc].m_members) {
+            const DomainSet& memberDomains = sccMemberp->m_processDomains;
+            domains.insert(memberDomains.begin(), memberDomains.end());
+            for (const CFuncCache* const calleep : sccMemberp->m_callees) {
+                if (calleep->m_scc != scc)
+                    calleeDomainps.insert(m_sccs[calleep->m_scc].m_reachedp);
+            }
+        }
+        m_sccs[scc].m_reachedp = unionDomains(std::move(domains), calleeDomainps);
+    }
+    // Add the sentrees the writers await, directly or not, to 'domainps'
+    void addWriterDomains(const Writers& writers, std::set<const DomainSet*>& domainps) {
+        domainps.insert(writers.m_domainSets.begin(), writers.m_domainSets.end());
+        for (const CalleeSet* const calleesp : writers.m_calleeSets) {
+            // Once per distinct caches called, not per writer
+            const auto pair = m_calleeSetDomains.emplace(calleesp, nullptr);
+            if (pair.second) {
+                std::set<const DomainSet*> calleeDomainps;
+                for (const CFuncCache* const calleep : *calleesp) {
+                    calleeDomainps.insert(m_sccs[calleep->m_scc].m_reachedp);
+                }
+                pair.first->second = unionDomains({}, calleeDomainps);
+            }
+            domainps.insert(pair.first->second);
+        }
+    }
+    // Add the sentrees of a writer to the external domains of a variable
+    void addExternalDomains(AstVarScope* const vscp, const DomainSet& domains) {
+        m_externalDomains[vscp].insert(domains.begin(), domains.end());
+        vscp->varp()->setWrittenBySuspendable();
+    }
+    // Set the external domains of the variables written by processes
+    void computeExternalDomains() {
+        // A variable written by a process, directly or through the functions it calls, gets the
+        // sentrees the process awaits, directly or not. Compute these per SCC of the call graph,
+        // as many processes, e.g. of each instance of a module, call the same functions
+        for (const auto& pair : m_calleeWriters) {
+            if (pair.first->m_sccIndex < 0) visitScc(pair.first);
+        }
+        for (const auto& pair : m_varWriters) {
+            std::set<const DomainSet*> domainps;
+            addWriterDomains(pair.second, domainps);
+            for (const DomainSet* const domainsp : domainps) {
+                addExternalDomains(pair.first, *domainsp);
+            }
+        }
+        for (const auto& pair : m_calleeWriters) {
+            addWriterDomains(pair.second, m_sccs[pair.first->m_scc].m_callerDomainps);
+        }
+        // Callers first
+        for (auto it = m_sccs.rbegin(); it != m_sccs.rend(); ++it) {
+            const size_t scc = m_sccs.rend() - it - 1;
+            const DomainSet* const domainsp = unionDomains({}, it->m_callerDomainps);
+            for (const CFuncCache* const cachep : it->m_members) {
+                for (const CFuncCache* const calleep : cachep->m_callees) {
+                    if (calleep->m_scc != scc) {
+                        m_sccs[calleep->m_scc].m_callerDomainps.insert(domainsp);
+                    }
+                }
+                for (AstVarScope* const vscp : cachep->m_writtenBySuspendable) {
+                    // Count the variables written only in called functions
+                    if (!m_externalDomains.count(vscp)) { ++m_notInlinedWritesInSuspendableUsage; }
+                    addExternalDomains(vscp, *domainsp);
+                }
+            }
         }
     }
     // Create an active with a timing scheduler resume() call
@@ -282,7 +391,7 @@ class AwaitVisitor final : public VNVisitor {
         m_lbs.add(m_scopeTopp, activep);
     }
     // Return the cache of a called function, visiting the function the first time
-    const CFuncCache* calledCache(AstCFunc* const nodep) {
+    CFuncCache* calledCache(AstCFunc* const nodep) {
         CFuncCache& cache = m_cfuncsCache(nodep)[static_cast<size_t>(m_gatherVars)];
         if (!cache.m_visited) {
             // Mark before visiting, so recursive calls only link to it
@@ -294,7 +403,7 @@ class AwaitVisitor final : public VNVisitor {
         return &cache;
     }
     // Return the cache of a call, visiting the called functions the first time
-    const CFuncCache* callCache(AstNodeCCall* const nodep) {
+    CFuncCache* callCache(AstNodeCCall* const nodep) {
         const auto& cfuncps = m_classGraphp->getCallPossibleCFuncs(nodep);
         if (cfuncps.empty()) return calledCache(nodep->funcp());
         // The possible functions depend only on the called function, so share their links
@@ -314,11 +423,18 @@ class AwaitVisitor final : public VNVisitor {
         m_inProcess = true;
         m_gatherVars = nodep->isSuspendable();  // Only gather vars in a suspendable
         iterateChildren(nodep);
-        addCalledValues(procCache);
-        const std::set<AstSenTree*>& domains = procCache.m_processDomains;
+        // Record the process as a writer, see computeExternalDomains()
+        const DomainSet* const domainsp = &*m_domainSets.insert(procCache.m_processDomains).first;
+        const CalleeSet* const calleesp = &*m_calleeSets.insert(procCache.m_callees).first;
         for (AstVarScope* const vscp : procCache.m_writtenBySuspendable) {
-            m_externalDomains[vscp].insert(domains.begin(), domains.end());
-            vscp->varp()->setWrittenBySuspendable();
+            Writers& writers = m_varWriters[vscp];
+            writers.m_calleeSets.insert(calleesp);
+            writers.m_domainSets.insert(domainsp);
+        }
+        for (CFuncCache* const calleep : *calleesp) {
+            Writers& writers = m_calleeWriters[calleep];
+            writers.m_calleeSets.insert(calleesp);
+            writers.m_domainSets.insert(domainsp);
         }
         m_cachep = nullptr;
         m_inProcess = false;
@@ -369,6 +485,7 @@ public:
         , m_externalDomains{externalDomains}
         , m_classGraphp{V3ClassGraph::build(nodep)} {
         iterate(nodep);
+        computeExternalDomains();
     }
     ~AwaitVisitor() override {
         V3Stats::addStat("Scheduling, count of non-inlined signal writes in suspendables",
