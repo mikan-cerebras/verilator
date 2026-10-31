@@ -52,4 +52,11 @@
            i = ?32?h3
    61 |   localparam BOOB = f_bad_out_of_bounds(3);
       |                     ^~~~~~~~~~~~~~~~~~~
+%Error: t/t_func_const_bad.v:68:22: Expecting expression to be constant, but can't determine constant for FUNCREF 'f_bad_slice_out_of_bounds'
+                                  : ... note: In instance 't'
+        t/t_func_const_bad.v:72:10: ... Location of non-constant SLICESEL: Slice select out of range
+        t/t_func_const_bad.v:68:22: ... Called from 'f_bad_slice_out_of_bounds()' with parameters:
+           i = 64'h100000000
+   68 |   localparam BSOOB = f_bad_slice_out_of_bounds(64'h1_0000_0000);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~
 %Error: Exiting due to
