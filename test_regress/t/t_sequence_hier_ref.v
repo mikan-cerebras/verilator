@@ -93,14 +93,15 @@ interface ifc (
   sequence s_method;
     obj.inv(a) ##1 b;
   endsequence
-  // A task called in a match item
+  // A task called in a match item, of a single-cycle sequence, as one in a multi-cycle
+  // property is not supported
   int n_calls = 0;
   task automatic count();
     n_calls++;
   endtask
   // verilator lint_off SIDEEFFECT
   sequence s_task;
-    (a, count()) ##1 b;
+    (a, count());
   endsequence
   // verilator lint_on SIDEEFFECT
   if (1) begin : g
@@ -228,7 +229,7 @@ module t;
   assert property (@(posedge clk) i.s_task |-> i.c)
   else fails[14]++;
   // verilator lint_off SIDEEFFECT
-  assert property (@(posedge clk) (i.a, i.count()) ##1 i.b |-> i.c)
+  assert property (@(posedge clk) (i.a, i.count()) |-> i.c)
   else ref_fails[14]++;
   // verilator lint_on SIDEEFFECT
 
@@ -251,7 +252,7 @@ module t;
     `checkd(fails[10], 23);
     `checkd(fails[11], 20);
     `checkd(fails[13], 4);
-    `checkd(fails[14], 3);
+    `checkd(fails[14], 4);
     `checkd(fails[15], 10);
     `checkd(fails[16], 23);
     `checkd(i.outer_fails, i.ref_outer_fails);
