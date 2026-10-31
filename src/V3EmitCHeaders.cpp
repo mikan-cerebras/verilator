@@ -661,9 +661,6 @@ class EmitCHeader final : public EmitCBaseVisitorConst {
             }
         }
 
-        // Forward declarations required by this AstNodeModule
-        puts("\nclass " + EmitCUtil::symClassName() + ";\n");
-
         // From `systemc_header
         emitSystemCSection(modp, VSystemCSectionType::HDR);
 
@@ -747,6 +744,7 @@ class EmitCHeader final : public EmitCBaseVisitorConst {
 
         std::set<string> cuse_set;
         auto add_to_cuse_set = [&](string s) { cuse_set.insert(s); };
+        add_to_cuse_set(EmitCUtil::fwdClassDecl(EmitCUtil::symClassName()));
 
         forModCUse(modp, VUseType::INT_FWD_CLASS | VUseType::INT_INCLUDE, add_to_cuse_set);
         if (const AstClassPackage* const packagep = VN_CAST(modp, ClassPackage)) {
