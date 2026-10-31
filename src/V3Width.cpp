@@ -8178,6 +8178,9 @@ class WidthVisitor final : public VNVisitor {
                                            | VAssertType::FINAL_DEFERRED_IMMEDIATE))
             return;
         for (const AstNode* stmtp = stmtsp; stmtp; stmtp = stmtp->nextp()) {
+            // A null statement, 'else;', is an empty implied block (see elseAction)
+            const AstBegin* const beginp = VN_CAST(stmtp, Begin);
+            if (beginp && beginp->implied() && !beginp->stmtsp()) continue;
             if (VN_IS(stmtp, NodeAssign) || VN_IS(stmtp, NodeBlock) || VN_IS(stmtp, NodeIf)
                 || VN_IS(stmtp, Case) || VN_IS(stmtp, RandCase) || VN_IS(stmtp, Loop)
                 || VN_IS(stmtp, NodeCoverOrAssert) || VN_IS(stmtp, Delay)

@@ -1,9 +1,8 @@
-[25] %Error: t_assert_pass_only.v:37: Assertion failed in t: 'assert' failed.
--Info: t/t_assert_pass_only.v:37: Verilog $stop, ignored due to +verilator+error+limit
-[25] %Error: t_assert_pass_only.v:38: Assertion failed in t: 'assert' failed.
-[25] %Error: t_assert_pass_only.v:39: Assertion failed in t: 'assert' failed.
-[25] %Error: t_assert_pass_only.v:40: Assertion failed in t: 'assert' failed.
-[25] %Error: t_assert_pass_only.v:26: Assertion failed in t: 'assert' failed.
-[25] %Error: t_assert_pass_only.v:27: Assertion failed in t: 'assert' failed.
-[25] %Error: t_assert_pass_only.v:28: Assertion failed in t: 'assert' failed.
+[25] %Error: t_assert_pass_only.v:41: Assertion failed in t: 'assert' failed.
+-Info: t/t_assert_pass_only.v:41: Verilog $stop, ignored due to +verilator+error+limit
+[25] %Error: t_assert_pass_only.v:42: Assertion failed in t: 'assert' failed.
+[25] %Error: t_assert_pass_only.v:43: Assertion failed in t: 'assert' failed.
+[25] %Error: t_assert_pass_only.v:44: Assertion failed in t: 'assert' failed.
+[25] %Error: t_assert_pass_only.v:30: Assertion failed in t: 'assert' failed.
+[25] %Error: t_assert_pass_only.v:31: Assertion failed in t: 'assert' failed.
 *-* All Finished *-*
