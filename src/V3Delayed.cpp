@@ -71,6 +71,27 @@
 //      if (__Vdly_Set__LHS) a[__Vdly_Dim0__LHS][__Vdly_Dim1__LHS] = __Vdly_Val__LHS;
 // Multiple consecutive NBAs of compatible form can share the same  __Vdly_Set* flag
 //
+// "Flag array" scheme. Used instead of the shared flag scheme for unpacked
+// array target variables when each NBA writes a whole element at constant
+// indices and does not directly follow another NBA to the same variable, and
+// there are at least as many NBAs as array elements (with fewer, the arrays
+// could be larger than what they replace), and more than one NBA (with one,
+// there is nothing to save), e.g. a register file written element by element
+// in separate processes. For these, the shared flag scheme would create a
+// flag and a value variable for most NBAs; this scheme instead creates one
+// array of flags shaped like the target, and one array of values of the
+// target's type. E.g.:
+//   LHS[1][2] <= RHS
+// is converted to:
+//  - In the original logic, replace the AstAssignDelay with:
+//      __Vdly_Val__LHS[1][2] = RHS;
+//      __Vdly_Set__LHS[1][2] = 1;
+//  - Add new "Post-scheduled" logic, once per element:
+//      if (__Vdly_Set__LHS[1][2]) {
+//         __Vdly_Set__LHS[1][2] = 0;
+//         LHS[1][2] = __Vdly_Val__LHS[1][2];
+//      }
+//
 // "Shadow variable masked" scheme. Used for packed target variables that
 // have both blocking and non-blocking updates. E.g.:
 //   LHS[Index] <= RHS;
@@ -141,6 +162,7 @@ class DelayedVisitor final : public VNVisitor {
         UnsupportedCompoundArrayInLoop,
         ShadowVar,
         ShadowVarMasked,
+        FlagArray,
         FlagShared,
         FlagUnique,
         ValueQueueWhole,
@@ -155,6 +177,10 @@ class DelayedVisitor final : public VNVisitor {
         bool m_partial = false;  // Used on LHS of NBA under a Sel
         bool m_inLoop = false;  // Used on LHS of NBA in a loop
         bool m_inSuspOrFork = false;  // Used on LHS of NBA in suspendable process or fork
+        // Each NBA writes a whole element at constant indices, not directly after another NBA
+        // to the same variable
+        bool m_constElems = true;
+        uint32_t m_nNbas = 0;  // Number of NBAs to the variable
         Scheme m_scheme = Scheme::Undecided;  // Conversion scheme to use for this variable
 
     private:
@@ -170,6 +196,11 @@ class DelayedVisitor final : public VNVisitor {
                 AstVarScope* vscp;  // The shadow variable
                 AstVarScope* maskp;  // The mask variable
             } m_shadowVarMaskedKit;
+            struct {  // Stuff needed for Scheme::FlagArray
+                AstAlwaysPost* postp;  // The post block for commiting results
+                AstVarScope* flagsp;  // The array of flags
+                AstVarScope* valuesp;  // The array of values
+            } m_flagArrayKit;
             struct {  // Stuff needed for Scheme::FlagShared
                 AstActive* activep;  // The active block for the Pre/Post logic
                 AstAlwaysPost* postp;  // The post block for commiting results
@@ -198,6 +229,10 @@ class DelayedVisitor final : public VNVisitor {
         auto& shadowVarMaskedKit() {
             UASSERT(m_scheme == Scheme::ShadowVarMasked, "Inconsistent Scheme");
             return m_kitUnion.m_shadowVarMaskedKit;
+        }
+        auto& flagArrayKit() {
+            UASSERT(m_scheme == Scheme::FlagArray, "Inconsistent Scheme");
+            return m_kitUnion.m_flagArrayKit;
         }
         auto& flagSharedKit() {
             UASSERT(m_scheme == Scheme::FlagShared, "Inconsistent Scheme");
@@ -284,6 +319,10 @@ class DelayedVisitor final : public VNVisitor {
     // Commit queue data types, by element type and partial flag. Shared by all instances,
     // as m_dlyTmps only shares variables with the same data type.
     std::map<std::pair<const AstNodeDType*, bool>, AstNBACommitQueueDType*> m_cqDTypeps;
+    // Flag array data types, by target data type, shared by all instances likewise
+    std::map<const AstNodeDType*, AstNodeDType*> m_flagArrayDTypeps;
+    // Elements committed by Scheme::FlagArray, by target variable and flattened index
+    std::set<std::pair<const AstVarScope*, uint32_t>> m_flagArrayElems;
 
     // To get the functions a virtual call may call
     const std::unique_ptr<V3CallTargets> m_callTargetsp;
@@ -311,6 +350,7 @@ class DelayedVisitor final : public VNVisitor {
     // STATE - Statistic tracking
     VDouble0 m_nSchemeShadowVar;  // Number of variables using Scheme::ShadowVar
     VDouble0 m_nSchemeShadowVarMasked;  // Number of variabels using Scheme::ShadowVarMasked
+    VDouble0 m_nSchemeFlagArray;  // Number of variables using Scheme::FlagArray
     VDouble0 m_nSchemeFlagShared;  // Number of variables using Scheme::FlagShared
     VDouble0 m_nSchemeFlagUnique;  // Number of variables using Scheme::FlagUnique
     VDouble0 m_nSchemeValueQueuesWhole;  //  Number of variables using Scheme::ValueQueueWhole
@@ -465,8 +505,15 @@ class DelayedVisitor final : public VNVisitor {
             // A suspendable process or fork can resume outside the 'nba' region, so the 'pre'
             // logic of the other schemes would undo its updates. The unique flag scheme has none.
             if (vscpInfo.m_inSuspOrFork) return Scheme::FlagUnique;
-            // Otherwise if an array of packed/basic elements, use the shared flag scheme
-            if (basicp) return Scheme::FlagShared;
+            // Otherwise if an array of packed/basic elements, use the flag array scheme when its
+            // arrays have no more elements than there are NBAs, otherwise the shared flag scheme
+            if (basicp) {
+                if (vscpInfo.m_constElems && vscpInfo.m_nNbas > 1
+                    && vscpInfo.m_nNbas >= uaDTypep->arrayUnpackedElements()) {
+                    return Scheme::FlagArray;
+                }
+                return Scheme::FlagShared;
+            }
             // Finally fall back on the shadow variable scheme, e.g. for
             // arrays of unpacked structs. This will be slow.
             // TODO: generic LHS scheme as discussed in #5092
@@ -700,6 +747,83 @@ class DelayedVisitor final : public VNVisitor {
         AstConst* const onesp = new AstConst{flp, AstConst::DTyped{}, lhsClonep->dtypep()};
         onesp->num().setAllBits1();
         nodep->addNextHere(new AstAssign{flp, lhsClonep, onesp});
+    }
+
+    // Scheme::FlagArray
+    // Return an unpacked array of bits with the same dimensions as 'dtypep'
+    AstNodeDType* flagArrayDType(AstUnpackArrayDType* dtypep) {
+        AstNodeDType*& resultpr = m_flagArrayDTypeps[dtypep];
+        if (!resultpr) {
+            AstUnpackArrayDType* const subp
+                = VN_CAST(dtypep->subDTypep()->skipRefp(), UnpackArrayDType);
+            AstNodeDType* const elemp
+                = subp ? flagArrayDType(subp) : dtypep->findBitDType(1, 1, VSigning::UNSIGNED);
+            resultpr = new AstUnpackArrayDType{dtypep->fileline(), elemp,
+                                               dtypep->rangep()->cloneTree(false)};
+            v3Global.rootp()->typeTablep()->addTypesp(resultpr);
+        }
+        return resultpr;
+    }
+    // Return the element of 'arrayp' at the constant indices of the element 'selp'
+    static AstNodeExpr* sameElement(AstNodeExpr* selp, AstVarScope* arrayp, VAccess access) {
+        FileLine* const flp = selp->fileline();
+        if (const AstArraySel* const aselp = VN_CAST(selp, ArraySel)) {
+            return new AstArraySel{flp, sameElement(aselp->fromp(), arrayp, access),
+                                   aselp->bitp()->cloneTree(false)};
+        }
+        return new AstVarRef{flp, arrayp, access};
+    }
+    // Return the index of the element 'selp' in its array, flattened
+    static uint32_t flatIndex(const AstNodeExpr* selp) {
+        const AstArraySel* const aselp = VN_CAST(selp, ArraySel);
+        if (!aselp) return 0;
+        const AstNodeArrayDType* const dtypep
+            = VN_AS(aselp->fromp()->dtypep()->skipRefp(), NodeArrayDType);
+        return flatIndex(aselp->fromp()) * dtypep->elementsConst()
+               + VN_AS(aselp->bitp(), Const)->toUInt();
+    }
+    void prepareSchemeFlagArray(AstVarScope* vscp, VarScopeInfo& vscpInfo) {
+        UASSERT_OBJ(vscpInfo.m_scheme == Scheme::FlagArray, vscp, "Inconsistent NBA scheme");
+        FileLine* const flp = vscp->fileline();
+        AstScope* const scopep = vscp->scopep();
+        const std::string baseName = "__" + vscp->varp()->shortName();
+        AstUnpackArrayDType* const dtypep = VN_AS(vscp->dtypep()->skipRefp(), UnpackArrayDType);
+        vscpInfo.flagArrayKit().flagsp
+            = m_dlyTmps.make(flp, scopep, flagArrayDType(dtypep), "Set" + baseName);
+        vscpInfo.flagArrayKit().flagsp->varp()->setIgnorePostWrite();
+        vscpInfo.flagArrayKit().valuesp
+            = m_dlyTmps.make(flp, scopep, vscp->dtypep(), "Val" + baseName);
+        // Create the AstActive for the Post logic, populated later
+        AstActive* const activep = new AstActive{flp, "nba-flag-array", vscpInfo.senTreep()};
+        activep->senTreeStorep(vscpInfo.senTreep());
+        scopep->addBlocksp(activep);
+        AstAlwaysPost* const postp = new AstAlwaysPost{flp};
+        activep->addStmtsp(postp);
+        vscpInfo.flagArrayKit().postp = postp;
+    }
+    void convertSchemeFlagArray(AstAssignDly* nodep, AstVarScope* vscp, VarScopeInfo& vscpInfo) {
+        UASSERT_OBJ(vscpInfo.m_scheme == Scheme::FlagArray, vscp, "Inconsistent NBA scheme");
+        FileLine* const flp = nodep->fileline();
+        AstVarScope* const flagsp = vscpInfo.flagArrayKit().flagsp;
+        AstVarScope* const valuesp = vscpInfo.flagArrayKit().valuesp;
+        // The target element, its indices are constant, see visit(AstAssignDly*)
+        AstNodeExpr* const lhsp = nodep->lhsp()->unlinkFrBack();
+        // Record the value and set the flag at the original NBA
+        nodep->addHereThisAsNext(new AstAssign{flp, sameElement(lhsp, valuesp, VAccess::WRITE),
+                                               nodep->rhsp()->unlinkFrBack()});
+        nodep->addHereThisAsNext(new AstAssign{flp, sameElement(lhsp, flagsp, VAccess::WRITE),
+                                               new AstConst{flp, AstConst::BitTrue{}}});
+        VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
+        // Add the 'Post' scheduled commit, clearing the flag, once per element
+        if (!m_flagArrayElems.emplace(vscp, flatIndex(lhsp)).second) {
+            VL_DO_DANGLING(pushDeletep(lhsp), lhsp);
+            return;
+        }
+        AstIf* const ifp = new AstIf{flp, sameElement(lhsp, flagsp, VAccess::READ)};
+        ifp->addThensp(new AstAssign{flp, sameElement(lhsp, flagsp, VAccess::WRITE),
+                                     new AstConst{flp, AstConst::BitFalse{}}});
+        ifp->addThensp(new AstAssign{flp, lhsp, sameElement(lhsp, valuesp, VAccess::READ)});
+        vscpInfo.flagArrayKit().postp->addStmtsp(ifp);
     }
 
     // Scheme::FlagShared
@@ -1003,6 +1127,16 @@ class DelayedVisitor final : public VNVisitor {
         VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
     }
 
+    // Return whether 'lhsp' is a whole unpacked array element selected by constant indices
+    static bool isConstElement(const AstNodeExpr* lhsp) {
+        if (VN_IS(lhsp->dtypep()->skipRefp(), UnpackArrayDType)) return false;
+        while (const AstArraySel* const selp = VN_CAST(lhsp, ArraySel)) {
+            if (!VN_IS(selp->bitp(), Const)) return false;
+            lhsp = selp->fromp();
+        }
+        return VN_IS(lhsp, VarRef);
+    }
+
     // Record where a variable is assigned
     void recordWriteRef(AstVarRef* nodep, bool nonBlocking) {
         // Ignore references in certain contexts
@@ -1087,6 +1221,11 @@ class DelayedVisitor final : public VNVisitor {
                 prepareSchemeShadowVarMasked(vscp, vscpInfo);
                 break;
             }
+            case Scheme::FlagArray: {
+                ++m_nSchemeFlagArray;
+                prepareSchemeFlagArray(vscp, vscpInfo);
+                break;
+            }
             case Scheme::FlagShared: {
                 ++m_nSchemeFlagShared;
                 prepareSchemeFlagShared(vscp, vscpInfo);
@@ -1132,6 +1271,10 @@ class DelayedVisitor final : public VNVisitor {
             }
             case Scheme::ShadowVarMasked: {
                 convertSchemeShadowVarMasked(nbap, vscp, vscpInfo);
+                break;
+            }
+            case Scheme::FlagArray: {
+                convertSchemeFlagArray(nbap, vscp, vscpInfo);
                 break;
             }
             case Scheme::FlagShared: {
@@ -1365,6 +1508,11 @@ class DelayedVisitor final : public VNVisitor {
         vscpInfo.m_partial |= VN_IS(nodep->lhsp(), Sel);
         vscpInfo.m_inLoop |= m_inLoop;
         vscpInfo.m_inSuspOrFork |= m_inSuspendableOrFork;
+        ++vscpInfo.m_nNbas;
+        // The shared flag scheme shares the flag of consecutive NBAs, keep using it for these
+        const bool afterSameVar = !m_nbas.empty() && m_nbas.back().vscp == vscp
+                                  && m_nbas.back().nodep->nextp() == nodep;
+        vscpInfo.m_constElems &= !afterSameVar && isConstElement(nodep->lhsp());
         // Sensitivity might be non-clocked, in a suspendable process, which are handled elsewhere
         if (m_activep->sentreep()->hasClocked()) vscpInfo.addSensitivity(m_activep->sentreep());
 
@@ -1426,6 +1574,7 @@ public:
     ~DelayedVisitor() override {
         V3Stats::addStat("NBA, variables using ShadowVar scheme", m_nSchemeShadowVar);
         V3Stats::addStat("NBA, variables using ShadowVarMasked scheme", m_nSchemeShadowVarMasked);
+        V3Stats::addStat("NBA, variables using FlagArray scheme", m_nSchemeFlagArray);
         V3Stats::addStat("NBA, variables using FlagShared scheme", m_nSchemeFlagShared);
         V3Stats::addStat("NBA, variables using FlagUnique scheme", m_nSchemeFlagUnique);
         V3Stats::addStat("NBA, variables using ValueQueueWhole scheme", m_nSchemeValueQueuesWhole);
