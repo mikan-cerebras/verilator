@@ -5,4 +5,5 @@
 [25] %Error: t_assert_pass_only.v:44: Assertion failed in t: 'assert' failed.
 [25] %Error: t_assert_pass_only.v:30: Assertion failed in t: 'assert' failed.
 [25] %Error: t_assert_pass_only.v:31: Assertion failed in t: 'assert' failed.
+[25] %Error: t_assert_pass_only.v:32: Assertion failed in t: 'assert' failed.
 *-* All Finished *-*
