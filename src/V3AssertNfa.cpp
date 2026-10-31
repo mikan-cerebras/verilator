@@ -315,6 +315,12 @@ static AstNodeStmt* newIfAssertFailOn(AstNode* bodyp, VAssertDirectiveType direc
     return ifp;
 }
 
+// True if nodep is a global clocking future sampled value function (IEEE 1800-2023 16.9.4)
+static bool isFutureValueFn(const AstNode* nodep) {
+    return VN_IS(nodep, Future) || VN_IS(nodep, Rising) || VN_IS(nodep, Falling)
+           || VN_IS(nodep, Steady);
+}
+
 // Return the fail action of an assertion without one
 static AstNode* newDefaultFailp(FileLine* flp, AstNodeModule* modp, const string& message) {
     // V3Assert turns the DT_ERROR display into the standard "Assertion failed in %m"
@@ -1155,11 +1161,13 @@ class SvaNfaBuilder final {
         // In a negated property, a success through b would not be counted with the vacuous
         // successes of an implication in p, which fail it too.
         const AstImplication* implp = nullptr;
-        propp->exists([&implp](const AstImplication* np) {
-            if (!np->isFollowedBy()) implp = np;
-            return implp != nullptr;
-        });
-        if (m_trackVacuous && implp) {
+        if (m_trackVacuous) {
+            propp->exists([&implp](const AstImplication* np) {
+                if (!np->isFollowedBy()) implp = np;
+                return implp != nullptr;
+            });
+        }
+        if (implp) {
             implp->v3warn(E_UNSUPPORTED, "Unsupported: implication inside another property "
                                          "operator in a negated property");
             return BuildResult::failWithError();
@@ -2951,10 +2959,8 @@ class SvaNfaLowering final {
         // action once.
         AstNodeExpr* terminalCountp = nullptr;
         const bool needTerminalCount
-            = needRejectCount && c.matchCondp && !c.matchCondp->exists([](const AstNode* np) {
-                  return VN_IS(np, Future) || VN_IS(np, Rising) || VN_IS(np, Falling)
-                         || VN_IS(np, Steady);
-              });
+            = needRejectCount && c.matchCondp
+              && !c.matchCondp->exists([](const AstNode* np) { return isFutureValueFn(np); });
         computeTerminalMatchAndReject(c, sigs, needMatchCount,
                                       needTerminalCount ? &terminalCountp : nullptr);
         if (terminalCountp) {

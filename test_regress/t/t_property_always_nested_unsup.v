@@ -11,7 +11,7 @@ module t (
   logic a, b, abrt;
 
   // An unbounded always is supported as a whole property, a consequent, or the property
-  // operand of an 'and' or 'or' with a boolean only
+  // operand of an 'and' or 'or' with a boolean at the top level of the property only
   assert property (@(posedge clk) sync_reject_on (abrt) (a and always [1:$] b));
   assert property (@(posedge clk) not always a);
   assert property (@(posedge clk) a |-> not always b);
