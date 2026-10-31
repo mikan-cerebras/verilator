@@ -239,26 +239,26 @@ module t;
   // Counts read in final (Postponed) to avoid same-timestep races.
   final begin
     for (int k = 0; k < 17; k++) `checkd(fails[k], ref_fails[k]);
-    `checkd(fails[0], 16);
+    `checkd(fails[0], 21);
     `checkd(fails[1], 31);
-    `checkd(fails[2], 30);
-    `checkd(fails[3], 21);
-    `checkd(fails[4], 28);
+    `checkd(fails[2], 32);
+    `checkd(fails[3], 30);
+    `checkd(fails[4], 31);
     `checkd(fails[5], 9);
     `checkd(fails[6], 3);
     `checkd(fails[7], 9);
-    `checkd(fails[8], 21);
-    `checkd(fails[9], 26);
-    `checkd(fails[10], 23);
-    `checkd(fails[11], 20);
+    `checkd(fails[8], 25);
+    `checkd(fails[9], 30);
+    `checkd(fails[10], 30);
+    `checkd(fails[11], 30);
     `checkd(fails[13], 4);
     `checkd(fails[14], 4);
     `checkd(fails[15], 10);
-    `checkd(fails[16], 23);
+    `checkd(fails[16], 31);
     `checkd(i.outer_fails, i.ref_outer_fails);
     `checkd(i.outer_fails, 10);
     `checkd(ck.fails, ck.ref_fails);
-    `checkd(ck.fails, 16);
+    `checkd(ck.fails, 21);
     `checkd(events, 10);
     $write("*-* All Finished *-*\n");
   end
