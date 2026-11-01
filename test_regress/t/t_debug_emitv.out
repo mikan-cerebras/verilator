@@ -315,7 +315,7 @@ module Vt_debug_emitv_t;
                     begin
                         $write("%%Error: %s:%0d:  got=%0d exp=%0d\n", 
                                136'h742f745f64656275675f656d6974762e76, 
-                               'sh111, SUB_B, 2'h1);
+                               'sh118, SUB_B, 2'h1);
                         $stop;
                     end
                 end
@@ -1290,9 +1290,62 @@ package Vt_debug_emitv___024unit;
             disable label3;
         end
     endfunction
+    Vt_debug_emitv_process __VprocessQueue_named__0[$]Vt_debug_emitv_process;
 endpackage
 package Vt_debug_emitv___Vconstpool;
     string CONSARRAY_0[1:0];
+endpackage
+interface Vt_debug_emitv_Iface;
+    input logic clk;
+    logic ifsig;
+    modport mp (
+        input logic ifsig
+    );
+endinterface
+module Vt_debug_emitv_sub;
+    input logic clk;
+    /* generate */ begin : sub_gen
+        typedef enum logic [1:0] {
+            SUB_A = 2'h0,
+            SUB_B = 2'h1
+        } sub_e;
+    end : sub_gen
+    task inc;
+        input int signed i;
+        output int signed o;
+        o = /*CRESET*/;
+        o = ({32'h1{{1'h0, i[31:1]}}} + 32'h1);
+    endtask
+    function f;
+        input int signed v;
+        begin : label4
+            if ((v == 'sh0)) begin
+                f = 'sh21;
+                disable label4;
+            end
+            f = ({32'h1{{31'h0, v[2]}}} + 32'h1);
+            disable label4;
+        end
+    endfunction
+    real r;
+endmodule
+module Vt_debug_emitv_seq_event;
+    input logic clk;
+    bit a;
+    bit b;
+    bit c;
+    sequence sq;
+    @(posedge clk) a##1 b##1 c
+    endsequence
+    initial begin
+        begin
+
+            ???? // EVENTCONTROL
+            @( sq())end
+    end
+endmodule
+package Vt_debug_emitv_p;
+    logic pkgvar;
 endpackage
 package Vt_debug_emitv_std;
     class Vt_debug_emitv_process;
@@ -1306,7 +1359,7 @@ package Vt_debug_emitv_std;
         VlProcessRef m_process;
         function self;
             Vt_debug_emitv_process pVt_debug_emitv_process;
-            begin : label4
+            begin : label5
                 self = /*CRESET*/;
                 p = /*CRESET*/;
                 $c(vlProcess->initFromSelf(p););
@@ -1318,7 +1371,7 @@ package Vt_debug_emitv_std;
                     end
                 end
                 self = p;
-                disable label4;
+                disable label5;
             end
         endfunction
         task set_status;
@@ -1326,10 +1379,10 @@ package Vt_debug_emitv_std;
             $c(m_process->state(s););
         endtask
         function status;
-            begin : label5
+            begin : label6
                 status = /*CRESET*/;
                 status = ($c(m_process->state()));
-                disable label5;
+                disable label6;
             end
         endfunction
         task kill;
@@ -1365,12 +1418,12 @@ package Vt_debug_emitv_std;
         endtask
         function get_randstate;
             string s;
-            begin : label6
+            begin : label7
                 get_randstate = /*CRESET*/;
                 s = string'($c(0));
                 $c(s = m_process->randstate(););
                 get_randstate = s;
-                disable label6;
+                disable label7;
             end
         endfunction
         task set_randstate;
@@ -1410,7 +1463,7 @@ package Vt_debug_emitv_std;
         endtask
         task get;
             input int signed keyCount;
-            begin : label7
+            begin : label8
                 dropKilled();
                 if (((m_keyCount >= keyCount) && ((
                                                    m_queue.size() 
@@ -1423,7 +1476,7 @@ package Vt_debug_emitv_std;
                     begin
                         m_keyCount = (m_keyCount - 
                                       keyCount);
-                        disable label7;
+                        disable label8;
                     end
                 end
                 m_queue.push_back(
@@ -1449,15 +1502,15 @@ package Vt_debug_emitv_std;
         endtask
         function try_get;
             input int signed keyCount;
-            begin : label8
+            begin : label9
                 try_get = /*CRESET*/;
                 if ((m_keyCount < keyCount)) begin
                     try_get = 'sh0;
-                    disable label8;
+                    disable label9;
                 end
                 m_keyCount = (m_keyCount - keyCount);
                 try_get = 'sh1;
-                disable label8;
+                disable label9;
             end
         endfunction
     endclass
@@ -1514,58 +1567,6 @@ package Vt_debug_emitv_std;
         string comment;
     } vl_cross_type_options_t;
 endpackage
-interface Vt_debug_emitv_Iface;
-    input logic clk;
-    logic ifsig;
-    modport mp (
-        input logic ifsig
-    );
-endinterface
-module Vt_debug_emitv_sub;
-    input logic clk;
-    /* generate */ begin : sub_gen
-        typedef enum logic [1:0] {
-            SUB_A = 2'h0,
-            SUB_B = 2'h1
-        } sub_e;
-    end : sub_gen
-    task inc;
-        input int signed i;
-        output int signed o;
-        o = /*CRESET*/;
-        o = ({32'h1{{1'h0, i[31:1]}}} + 32'h1);
-    endtask
-    function f;
-        input int signed v;
-        begin : label9
-            if ((v == 'sh0)) begin
-                f = 'sh21;
-                disable label9;
-            end
-            f = ({32'h1{{31'h0, v[2]}}} + 32'h1);
-            disable label9;
-        end
-    endfunction
-    real r;
-endmodule
-module Vt_debug_emitv_seq_event;
-    input logic clk;
-    bit a;
-    bit b;
-    bit c;
-    sequence sq;
-    @(posedge clk) a##1 b##1 c
-    endsequence
-    initial begin
-        begin
-
-            ???? // EVENTCONTROL
-            @( sq())end
-    end
-endmodule
-package Vt_debug_emitv_p;
-    logic pkgvar;
-endpackage
 package Vt_debug_emitv_Pkg;
     bit signed [31:0]  PKG_PARAM;
     typedef enum int signed{
@@ -1573,4 +1574,16 @@ package Vt_debug_emitv_Pkg;
         BAR = 32'h1,
         BAZ = 32'h2
     } enum_t;
+    task disable_named;
+        begin : named
+            fork
+            begin
+                __VprocessQueue_named__0.push_back(
+                                                   self());
+                #1;
+            end
+            join
+        end
+        killQueue(__VprocessQueue_named__0);
+    endtask
 endpackage

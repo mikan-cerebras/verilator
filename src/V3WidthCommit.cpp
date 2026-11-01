@@ -42,6 +42,91 @@ struct PairHash final {
 };
 
 //######################################################################
+// Determine if calling a task may block the caller, as the task contains a blocking timing
+// control outside a fork..join_none, or calls a task that does
+
+class WidthTaskBlocksVisitor final : public VNVisitorConst {
+    // STATE
+    std::unordered_map<const AstNodeFTask*, bool>& m_cache;  // Result per task
+    bool m_found = false;  // Found a statement that blocks
+
+    // VISITORS
+    void visit(AstFork* nodep) override {
+        if (!nodep->joinType().joinNone()) iterateChildrenConst(nodep);
+    }
+    void visit(AstNodeFTaskRef* nodep) override {
+        if (VN_IS(nodep->taskp(), Task) && blocks(m_cache, nodep->taskp())) m_found = true;
+    }
+    void visit(AstAssignDly*) override {}  // Non-blocking, even with a timing control
+    void visit(AstNode* nodep) override {
+        if (nodep->isTimingControl()) m_found = true;
+        iterateChildrenConst(nodep);
+    }
+
+    // CONSTRUCTORS
+    explicit WidthTaskBlocksVisitor(std::unordered_map<const AstNodeFTask*, bool>& cache)
+        : m_cache{cache} {}
+
+public:
+    static bool blocks(std::unordered_map<const AstNodeFTask*, bool>& cache, AstNodeFTask* taskp) {
+        // Insert false first, so recursive calls terminate
+        if (!cache.emplace(taskp, false).second) return cache[taskp];
+        WidthTaskBlocksVisitor visitor{cache};
+        visitor.iterateChildrenConst(taskp);
+        cache[taskp] = visitor.m_found;
+        return visitor.m_found;
+    }
+};
+
+//######################################################################
+// Variables read by statements, for an implicit sensitivity list
+
+class WidthCommitReadsVisitor final : public VNVisitorConst {
+    // STATE
+    std::vector<std::pair<AstNodeExpr*, const AstVar*>> m_reads;  // Read expression, its variable
+    std::set<const AstVar*> m_locals;  // Variables declared in the statements
+
+    // VISITORS
+    void visit(AstVar* nodep) override { m_locals.insert(nodep); }
+    void visit(AstNodeVarRef* nodep) override {
+        // The process queue of a disable by name is not a value the statements read
+        if (nodep->access().isReadOrRW() && !nodep->varp()->processQueue()) {
+            m_reads.emplace_back(nodep, nodep->varp());
+        }
+    }
+    // A member of a handle is read as a whole, e.g. a signal of a virtual interface
+    void visit(AstMemberSel* nodep) override {
+        const AstNode* basep = nodep->fromp();
+        while (const AstMemberSel* const selp = VN_CAST(basep, MemberSel)) basep = selp->fromp();
+        const AstNodeVarRef* const baseRefp = VN_CAST(basep, NodeVarRef);
+        if (!baseRefp) {
+            iterateChildrenConst(nodep);
+        } else if (nodep->access().isReadOrRW()) {
+            m_reads.emplace_back(nodep, baseRefp->varp());
+        }
+    }
+    // What only nested event or wait expressions read is not included
+    void visit(AstSenTree*) override {}
+    void visit(AstWait* nodep) override { iterateAndNextConstNull(nodep->stmtsp()); }
+    void visit(AstNode* nodep) override { iterateChildrenConst(nodep); }
+
+    // CONSTRUCTORS
+    explicit WidthCommitReadsVisitor(AstNode* stmtsp) { iterateAndNextConstNull(stmtsp); }
+
+public:
+    // Variables and members the statements read, other than of their own variables
+    static std::vector<AstNodeExpr*> apply(AstNode* stmtsp) {
+        // IEEE 1800-2023 9.4.2.2. Duplicates are left to V3Const.
+        const WidthCommitReadsVisitor visitor{stmtsp};
+        std::vector<AstNodeExpr*> readps;
+        for (const auto& read : visitor.m_reads) {
+            if (!visitor.m_locals.count(read.second)) readps.push_back(read.first);
+        }
+        return readps;
+    }
+};
+
+//######################################################################
 // Now that all widthing is complete,
 // Copy all width() to widthMin().  V3Const expects this
 
@@ -61,7 +146,11 @@ class WidthCommitVisitor final : public VNVisitor {
     bool m_contReads = false;  // Check read continuous automatic variables
     bool m_dynsizedelem = false;  // Writing dynamically-sized array element, not the array itself
     VMemberMap m_memberMap;  // Member names cached for fast lookup
-    bool m_taskRefWarn = true;  // Allow task reference warnings
+    bool m_taskRefWarn = true;  // Allow task reference warnings, false under fork..join_none
+    const AstAlways* m_alwaysCombp = nullptr;  // Current always_comb or always_latch
+    bool m_inFinal = false;  // Under final procedure
+    const AstAlways* m_alwaysFfp = nullptr;  // Current always_ff
+    std::unordered_map<const AstNodeFTask*, bool> m_taskBlocks;  // If calling task may block
     bool m_underSel = false;  // Under AstMemberSel or AstSel
     bool m_underAlwaysEdged = false;  // Under always with sequential SenTree
     std::vector<AstNew*> m_virtualNewsp;  // Instantiations of virtual classes
@@ -84,6 +173,31 @@ private:
                     << nodep->warnMore() << "... Suggest make caller 'function "
                     << m_ftaskp->prettyName() << "' a task\n"
                     << m_ftaskp->warnContextSecondary());
+        // Forks V3LinkJump made for disable by name do not block
+        const AstFork* const forkp = VN_CAST(nodep, Fork);
+        if (m_alwaysCombp && m_taskRefWarn && nodep->isTimingControl() && !VN_IS(nodep, AssignDly)
+            && !(forkp && forkp->disableWrap())) {
+            nodep->v3error("Blocking timing controls and fork-join are not legal under "
+                           << m_alwaysCombp->keyword().ascii() << " (IEEE 1800-2023 9.2.2.2.2)\n"
+                           << nodep->warnMore() << "... Suggest use a normal 'always'");
+        }
+        if (m_inFinal && m_taskRefWarn && nodep->isTimingControl()
+            && !(forkp && forkp->disableWrap())) {
+            nodep->v3error("Timing controls and fork-join are not legal in final blocks"
+                           " (IEEE 1800-2023 9.2.3)");
+        }
+        if (m_alwaysFfp && m_taskRefWarn) {
+            if (VN_IS(nodep, Delay) || VN_IS(nodep, Wait)
+                || (VN_IS(nodep, Assign) && nodep->isTimingControl())) {
+                nodep->v3error("Blocking timing controls are not legal under always_ff"
+                               " (IEEE 1800-2023 9.2.2.4)\n"
+                               << nodep->warnMore() << "... Suggest use a normal 'always'");
+            } else if (VN_IS(nodep, EventControl) && m_alwaysFfp->sentreep()) {
+                nodep->v3error("Only one event control is legal under always_ff"
+                               " (IEEE 1800-2023 9.2.2.4)\n"
+                               << nodep->warnMore() << "... Suggest use a normal 'always'");
+            }
+        }
     }
     AstNodeDType* editOneDType(AstNodeDType* nodep) {
         // See if the dtype/refDType can be converted to a standard one
@@ -259,17 +373,46 @@ private:
             }
         }
     }
+    // Replace an '@*' by change events on what the statements read; false if they read nothing.
+    bool makeImplicitSenses(AstSenTree* sentreep, AstNode* stmtsp) {
+        AstSenItem* sensesp = nullptr;
+        for (AstNodeExpr* const readp : WidthCommitReadsVisitor::apply(stmtsp)) {
+            AstNodeExpr* const senp = readp->cloneTree(false);
+            if (AstNodeVarRef* const refp = VN_CAST(senp, NodeVarRef)) {
+                refp->access(VAccess::READ);
+            } else {
+                VN_AS(senp, MemberSel)->access(VAccess::READ);
+            }
+            sensesp = AstNode::addNext(
+                sensesp, new AstSenItem{readp->fileline(), VEdgeType::ET_CHANGED, senp});
+        }
+        if (!sensesp) return false;
+        pushDeletep(sentreep->sensesp()->unlinkFrBack());
+        sentreep->addSensesp(sensesp);
+        return true;
+    }
+
     void visit(AstAlways* nodep) override {
         // As have not optimized SenTrees yet, an 'always .*' will be on first and only SenItem
         if (nodep->sentreep() && nodep->sentreep()->sensesp()
             && nodep->sentreep()->sensesp()->isComboStar()) {
-            const bool noReads = nodep->forall(
-                [&](const AstNodeVarRef* refp) { return !refp->access().isReadOrRW(); });
+            // Combinational without a timing control, else waiting on what it reads
+            const bool timing
+                = nodep->exists([](const AstNode* np) { return np->isTimingControl(); });
+            bool noReads;
+            if (timing) {
+                noReads = !makeImplicitSenses(nodep->sentreep(), nodep->stmtsp());
+            } else {
+                noReads = nodep->forall(
+                    [&](const AstNodeVarRef* refp) { return !refp->access().isReadOrRW(); });
+            }
             if (noReads) {
                 nodep->v3warn(ALWNEVER, "'always @*' will never execute as expression list is "
                                         "empty (no variables read)\n"
                                             << nodep->warnMore()
-                                            << "... Suggest use 'always_comb'");
+                                            << (timing ? "... Suggest use an explicit "
+                                                         "sensitivity list"
+                                                       : "... Suggest use 'always_comb'"));
                 VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
                 return;
             }
@@ -277,7 +420,28 @@ private:
         VL_RESTORER(m_underAlwaysEdged);
         m_underAlwaysEdged
             = nodep->sentreep() && nodep->sentreep()->sensesp() && nodep->sentreep()->hasEdge();
+        VL_RESTORER(m_alwaysCombp);
+        m_alwaysCombp = nodep->keyword() == VAlwaysKwd::ALWAYS_COMB
+                                || nodep->keyword() == VAlwaysKwd::ALWAYS_LATCH
+                            ? nodep
+                            : nullptr;
+        VL_RESTORER(m_alwaysFfp);
+        m_alwaysFfp = nodep->keyword() == VAlwaysKwd::ALWAYS_FF ? nodep : nullptr;
         // Iterate will delete ComboStar sentrees, so after above
+        iterateChildren(nodep);
+        editDType(nodep);
+    }
+    void visit(AstNodeCoverOrAssert* nodep) override {
+        VL_RESTORER(m_alwaysCombp);
+        m_alwaysCombp = nullptr;  // Property delays are not procedural timing controls
+        VL_RESTORER(m_alwaysFfp);
+        m_alwaysFfp = nullptr;  // Property delays are not procedural timing controls
+        iterateChildren(nodep);
+        editDType(nodep);
+    }
+    void visit(AstFinal* nodep) override {
+        VL_RESTORER(m_inFinal);
+        m_inFinal = true;
         iterateChildren(nodep);
         editDType(nodep);
     }
@@ -285,6 +449,13 @@ private:
         VL_RESTORER(m_taskRefWarn);
         // fork..join_any is allowed to call tasks, and UVM does this
         if (!nodep->isTimingControl()) m_taskRefWarn = false;
+        iterateChildren(nodep);
+        editDType(nodep);
+    }
+    void visit(AstEventControl* nodep) override {
+        if (nodep->sentreep()->sensesp()->isComboStar()) {
+            makeImplicitSenses(nodep->sentreep(), nodep->stmtsp());
+        }
         iterateChildren(nodep);
         editDType(nodep);
     }
@@ -453,7 +624,15 @@ private:
             nodep->name("");  // Clear to save memory; nodep->name() will work via nodep->varp()
     }
     void visit(AstAssign* nodep) override {
-        iterateChildren(nodep);
+        iterateAndNextNull(nodep->rhsp());
+        iterateAndNextNull(nodep->lhsp());
+        {
+            VL_RESTORER(m_alwaysCombp);
+            m_alwaysCombp = nullptr;  // Report the assignment instead of its timing control
+            VL_RESTORER(m_alwaysFfp);
+            m_alwaysFfp = nullptr;  // Report the assignment instead of its timing control
+            iterateAndNextNull(nodep->timingControlp());
+        }
         editDType(nodep);
         // Lint
         if (m_underAlwaysEdged) {
@@ -487,7 +666,13 @@ private:
         editDType(nodep);
     }
     void visit(AstAssignDly* nodep) override {
-        iterateAndNextNull(nodep->timingControlp());
+        {
+            VL_RESTORER(m_alwaysCombp);
+            m_alwaysCombp = nullptr;  // Timing control of a non-blocking assignment is legal
+            VL_RESTORER(m_alwaysFfp);
+            m_alwaysFfp = nullptr;  // Timing control of a non-blocking assignment is legal
+            iterateAndNextNull(nodep->timingControlp());
+        }
         iterateAndNextNull(nodep->rhsp());
         {
             VL_RESTORER(m_contNbap);
@@ -525,6 +710,17 @@ private:
                               << nodep->warnMore() << "... Or, suggest make called 'task "
                               << nodep->taskp()->prettyName() << "' a function void\n"
                               << nodep->taskp()->warnContextSecondary());
+        }
+        if ((m_alwaysCombp || m_inFinal) && m_taskRefWarn && VN_IS(nodep->taskp(), Task)
+            && WidthTaskBlocksVisitor::blocks(m_taskBlocks, nodep->taskp())) {
+            const std::string where = m_inFinal ? "in final blocks (IEEE 1800-2023 9.2.3)"
+                                                : "under "s + m_alwaysCombp->keyword().ascii()
+                                                      + " (IEEE 1800-2023 9.2.2.2.2)";
+            nodep->v3error("Calling a task that blocks is not legal "
+                           << where << "\n"
+                           << nodep->warnContextPrimary() << "\n"
+                           << nodep->taskp()->warnOther() << "... Location of blocking task\n"
+                           << nodep->taskp()->warnContextSecondary());
         }
         if (nodep->taskp()) nodep->taskp()->user2(1);
         if (AstNew* const newp = VN_CAST(nodep, New)) {
