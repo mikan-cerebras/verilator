@@ -361,8 +361,6 @@ private:
         // Replace the FuncRef with the inlined body
         funcrefp->replaceWith(clonedp);
         VL_DO_DANGLING(pushDeletep(funcrefp), funcrefp);
-        // Clear referenced flag; sequences with isReferenced==false are deleted in assertPreAll
-        seqp->isReferenced(false);
     }
     AstPropSpec* clonePropertyBody(AstFuncRef* funcrefp, AstProperty* propp) {
         // Clone, as the property may be instanced multiple times with different arguments, in
@@ -1921,6 +1919,19 @@ private:
     }
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
 
+    // Delete sequence declarations after inlining
+    void cleanupSequences() {
+        // All instances outside sequence declarations were inlined. Instances inside
+        // them are not uses: they were inlined with the body that contains them, or are
+        // unused like that body (IEEE 1800-2023 16.8 does not require a declaration to
+        // be used). Property declarations are gone.
+        for (AstSequence* const seqp : m_seqsToCleanup) seqp->unlinkFrBack();
+        m_netlistp->foreach([](const AstFuncRef* refp) {
+            UASSERT_OBJ(!VN_IS(refp->taskp(), Sequence), refp, "Sequence instance not inlined");
+        });
+        for (AstSequence* const seqp : m_seqsToCleanup) VL_DO_DANGLING(seqp->deleteTree(), seqp);
+    }
+
 public:
     // CONSTRUCTORS
     explicit AssertPreVisitor(AstNetlist* nodep)
@@ -1930,17 +1941,7 @@ public:
         iterate(nodep);
         // Fix up varref names
         for (AstVarXRef* xrefp : m_xrefsp) xrefp->name(xrefp->varp()->name());
-        // Clean up sequence declarations after inlining.
-        // Referenced sequences that were inlined have isReferenced cleared.
-        // Remaining referenced sequences are in unsupported contexts (e.g. @seq event).
-        for (AstSequence* seqp : m_seqsToCleanup) {
-            if (seqp->isReferenced()) {
-                seqp->v3warn(E_UNSUPPORTED,
-                             "Unsupported: sequence referenced outside assertion property");
-            } else {
-                VL_DO_DANGLING(seqp->unlinkFrBack()->deleteTree(), seqp);
-            }
-        }
+        if (!m_seqsToCleanup.empty()) cleanupSequences();
     }
     ~AssertPreVisitor() override = default;
 };
