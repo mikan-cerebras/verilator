@@ -275,11 +275,11 @@ inline std::string VL_CVT_N_CSTR(const char* lhsp) VL_PURE {
     return lhsp ? std::string{lhsp} : ""s;
 }
 
-// Return queue from an unpacked array
-template <typename T, std::size_t N_Depth>
+// Return queue from an unpacked array, from its last element if T_Reverse
+template <bool T_Reverse, typename T, std::size_t N_Depth>
 inline VlQueue<T> VL_CVT_UNPACK_TO_Q(const VlUnpacked<T, N_Depth>& q) VL_PURE {
     VlQueue<T> ret;
-    for (size_t i = 0; i < N_Depth; ++i) ret.push_back(q[i]);
+    for (size_t i = 0; i < N_Depth; ++i) ret.push_back(q[T_Reverse ? N_Depth - 1 - i : i]);
     return ret;
 }
 
@@ -3753,6 +3753,34 @@ inline std::string VL_CVT_PACK_STR_NQ(QData lhs) VL_PURE {
     VlWide<VL_WQ_WORDS_E> lw;
     VL_SET_WQ(lw, lhs);
     return VL_CVT_PACK_STR_NW(VL_WQ_WORDS_E, lw);
+}
+// Insert a queue element into a wide value
+template <typename T>
+inline void _vl_insert_W_elem(WDataOutP owp, T ld, int hbit, int lbit) VL_MT_SAFE {
+    _vl_insert_WQ(owp, ld, hbit, lbit);
+}
+template <std::size_t N_Words>
+inline void _vl_insert_W_elem(WDataOutP owp, const VlWide<N_Words>& ld, int hbit,
+                              int lbit) VL_MT_SAFE {
+    _vl_insert_WW(owp, ld, hbit, lbit);
+}
+// Convert the stream of a queue or dynamic array to a string, '<<' if rd is nonzero
+template <typename T>
+inline std::string VL_CVT_PACK_STR_NR(int lbits, IData rd, const VlQueue<T>& q) VL_MT_SAFE {
+    // Pack the elements, the first one most significant, as for a packed value
+    const int obits = q.size() * lbits;
+    if (!obits) return "";
+    std::vector<EData> packed(VL_WORDS_I(obits));
+    const WDataOutP packedp = WDataOutP::external(packed.data());
+    for (size_t i = 0; i < q.size(); ++i) {
+        const int lsb = obits - (i + 1) * lbits;
+        _vl_insert_W_elem(packedp, q.at(i), lsb + lbits - 1, lsb);
+    }
+    if (!rd) return VL_CVT_PACK_STR_NW(packed.size(), packedp);
+    std::vector<EData> streamed(packed.size());
+    const WDataOutP streamedp = WDataOutP::external(streamed.data());
+    VL_STREAML_WWI(obits, streamedp, packedp, rd);
+    return VL_CVT_PACK_STR_NW(streamed.size(), streamedp);
 }
 inline std::string VL_CVT_PACK_STR_NN(const std::string& lhs) VL_PURE { return lhs; }
 inline std::string& VL_CVT_PACK_STR_NN(std::string& lhs) VL_PURE { return lhs; }

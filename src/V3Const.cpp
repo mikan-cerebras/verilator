@@ -1023,9 +1023,19 @@ class ConstVisitor final : public VNVisitor {
                                     const bool packReal) {
         const AstNodeDType* const dtypep = fromp->dtypep()->skipRefp();
         if (const AstUnpackArrayDType* const unpackDtypep = VN_CAST(dtypep, UnpackArrayDType)) {
-            for (const int idx : unpackDtypep->declRange().seqLeftToRight()) {
-                AstArraySel* const selp
-                    = new AstArraySel{fromp->fileline(), fromp->cloneTreePure(false), idx};
+            const VNumRange range = unpackDtypep->declRange();
+            const AstConsArray* const consp = VN_CAST(fromp, ConsArray);
+            for (const int idx : range.seqLeftToRight()) {
+                // Select by offset from the low index, from a constant array directly
+                AstNodeExpr* selp;
+                if (consp) {
+                    AstNodeExpr* const valuep = consp->valuep(idx - range.lo());
+                    UASSERT_OBJ(valuep, consp, "Constant array element missing");
+                    selp = valuep->cloneTree(false);
+                } else {
+                    selp = new AstArraySel{fromp->fileline(), fromp->cloneTreePure(false),
+                                           idx - range.lo()};
+                }
                 collectFixedAggregateTerms(selp, termps, packReal);
             }
             VL_DO_DANGLING(pushDeletep(fromp), fromp);
@@ -1720,6 +1730,29 @@ class ConstVisitor final : public VNVisitor {
         return true;
     }
 
+    bool packStreamOperand(AstNodeStream* streamp) {
+        // Pack a fixed-size unpacked operand, so the stream is a packed one
+        if (!VN_IS(streamp->dtypep(), StreamDType)) return false;
+        AstNodeExpr* const fromp = streamp->lhsp();
+        if (!fromp->dtypep()->isStreamableFixedAggregate()) return false;
+        fromp->unlinkFrBack();
+        AstNodeExpr* packedp;
+        if (lowerAsFixedAggregate(fromp->dtypep())) {
+            packedp = packFixedAggregate(fromp);
+        } else {
+            // Converted as a whole, so the operand is evaluated once
+            const int width = fromp->dtypep()->widthStream();
+            packedp = new AstCvtArrayToPacked{
+                fromp->fileline(), fromp,
+                fromp->findBitOrLogicDType(width, width, VSigning::UNSIGNED,
+                                           fromp->dtypep()->isFourstate())};
+        }
+        streamp->lhsp(packedp);
+        streamp->dtypeSetBitOrLogicUnsized(packedp->width(), packedp->widthMin(),
+                                           VSigning::UNSIGNED, packedp->isFourstateOrNoDtype());
+        if (m_params) iterate(streamp);  // Fold a constant operand
+        return true;
+    }
     bool operandBiExtendConstShrink(AstNodeBiop* nodep) {
         // Loop unrolling favors standalone compares
         // EQ(const{width32}, EXTEND(xx{width3})) -> EQ(const{3}, xx{3})
@@ -4239,6 +4272,34 @@ class ConstVisitor final : public VNVisitor {
         if (operandBoolShift(nodep->condp())) replaceBoolShift(nodep->condp());
     }
 
+    void visit(AstCvtArrayToPacked* nodep) override {
+        iterateChildren(nodep);
+        // Unpacked structs are packed member by member, and so is a constant array, e.g. a
+        // parameter in a stream with other operands, so it folds
+        if (!lowerAsFixedAggregate(nodep->fromp()->dtypep())
+            && !(m_params && VN_IS(nodep->fromp(), ConsArray))) {
+            return;
+        }
+        AstNodeExpr* const newp = packFixedAggregate(nodep->fromp()->unlinkFrBack());
+        nodep->replaceWith(newp);
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+        iterate(newp);
+    }
+    void visit(AstCvtPackedToArray* nodep) override {
+        // A parameter value must become constant, so slice a constant into its elements, but a
+        // queue is not a constant
+        if (!m_params || !VN_IS(nodep->dtypep()->skipRefp(), UnpackArrayDType)) {
+            visit(static_cast<AstNode*>(nodep));
+            return;
+        }
+        iterateChildren(nodep);
+        if (!VN_IS(nodep->fromp(), Const)) return;  // Reported for the operand if required
+        AstNodeExpr* const newp
+            = V3Width::unpackBitStreamEdit(nodep->fromp()->unlinkFrBack(), nodep->dtypep());
+        nodep->replaceWith(newp);
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+        iterate(newp);
+    }
     void visit(AstConsArray* nodep) override { iterateChildren(nodep); }
     void visit(AstConsStruct* nodep) override { iterateChildren(nodep); }
     void visit(AstConsStructItem* nodep) override { iterateChildren(nodep); }
@@ -4529,6 +4590,8 @@ class ConstVisitor final : public VNVisitor {
     TREEOP ("AstShiftL{operandShiftShift(nodep)}",      "replaceShiftShift(nodep)");
     TREEOP ("AstShiftR{operandShiftShift(nodep)}",      "replaceShiftShift(nodep)");
     TREEOP ("AstWordSel{operandWordOOB(nodep)}",        "replaceZero(nodep)");
+    TREEOPV("AstCvtPackString{$lhsp.castNodeStream, packStreamOperand(VN_AS(nodep->lhsp(),, NodeStream))}", "DONE");
+    TREEOPV("AstNodeStream{m_params, packStreamOperand(nodep)}", "DONE");
     // Compress out EXTENDs to appease loop unroller
     TREEOPV("AstEq    {$rhsp.castExtend,operandBiExtendConstShrink(nodep)}",    "DONE");
     TREEOPV("AstNeq   {$rhsp.castExtend,operandBiExtendConstShrink(nodep)}",    "DONE");
