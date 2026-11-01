@@ -51,6 +51,8 @@ module t (
     `checkh(e.prev(1), E01);
     `checkh(e.prev(1).prev(1), E04);
     `checkh(e.prev(2), E04);
+    `checkh(e.next(30), E03);
+    `checkh(e.prev(31), E01);
     `checkh(e.num, 3);
     `checks(e.name, "E03");
     //
@@ -91,12 +93,40 @@ module t (
 
   localparam THREE = 3;
 
+  // A value not in the enum steps to the default value of the base type, which is not an item
+  // here (IEEE 1800-2023 6.19.5.3, Table 6-7)
+  typedef enum {
+    Z1 = 1,
+    Z2 = 2,
+    Z4 = 4
+  } z_t;
+  z_t z;
+  int z_calls = 0;
+  function automatic z_t z_count(z_t v);
+    ++z_calls;
+    return v;
+  endfunction
+
+  // Values above ENUM_LOOKUP_BITS use an associative table
+  typedef enum {
+    L1 = 'h10000,
+    L2 = 'h20000,
+    L3 = 'h30000
+  } l_t;
+  l_t l;
+
+  typedef enum {O5 = 5} o_t;
+  o_t o;
+
   // Check runtime
   always @(posedge clk) begin
     cyc <= cyc + 1;
     if (cyc == 0) begin
       // Setup
       e <= E01;
+      z <= z_t'(cyc + 3);
+      l <= L2;
+      o <= O5;
     end
     else if (cyc == 1) begin
       `checks(e.name, "E01");
@@ -106,7 +136,24 @@ module t (
       `checkh(e.prev, E04);
       `checkh(e.prev(1), E04);
       `checkh(e.prev(2), E03);
+      `checkh(e.next(30), E01);
+      `checkh(e.next(31), E03);
+      `checkh(e.next(1000000000), E03);
+      `checkh(e.prev(32), E03);
+      `checkh(e.prev(4294967295), E01);
       e <= E03;
+      `checkh(z.next(0), 0);
+      `checkh(z.next(2), 0);
+      `checkh(z.prev(2), 0);
+      z <= Z4;
+      `checkh(l.next(2), L1);
+      `checkh(l.next(4), L3);
+      `checkh(l.prev(2), L3);
+      `checkh(l.prev(5), L3);
+      `checkh(l.next(3), L2);
+      `checkh(o.next(2), O5);
+      `checkh(o.prev(1), O5);
+      `checkh(o.prev(0), O5);
     end
     else if (cyc == 2) begin
       `checks(e.name, "E03");
@@ -116,7 +163,14 @@ module t (
       `checkh(e.prev, E01);
       `checkh(e.prev(1), E01);
       `checkh(e.prev(2), E04);
+      `checkh(e.next(29), E01);
+      `checkh(e.prev(29), E04);
       e <= E04;
+      `checkh(z.next(0), Z4);
+      `checkh(z.prev(0), Z4);
+      `checkh(z.next(1), Z1);
+      `checkh(z.prev(4), Z2);
+      z <= z_t'(cyc + 7);  // Above the lookup table, where 9 would alias Z2
     end
     else if (cyc == 3) begin
       `checks(e.name, "E04");
@@ -127,6 +181,11 @@ module t (
       `checkh(e.prev(1), E03);
       `checkh(e.prev(2), E01);
       e <= E01;
+      `checkh(z.next(1), 0);
+      `checkh(z.prev(1), 0);
+      `checkh(z.next(2), 0);
+      `checkh(z_count(z).next(1), 0);
+      `checkh(z_calls, 1);
       //
       s = $sformatf("%p", e);
       `checks(s, "E04");
