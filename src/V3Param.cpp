@@ -524,6 +524,8 @@ class ParamProcessor final {
             key += "}";
         } else if (const AstNodeDType* const dtypep = VN_CAST(nodep, NodeDType)) {
             key += dtypep->prettyDTypeName(true);
+        } else if (VN_IS(nodep, Unbounded)) {
+            key = "$";
         }
         UASSERT_OBJ(!key.empty(), nodep, "Parameter yielded no value string");
         return key;
@@ -1513,7 +1515,8 @@ class ParamProcessor final {
             } else {
                 UINFO(9, "cellPinCleanup: before constify " << pinp << " " << modvarp);
                 V3Const::constifyParamsEdit(pinp->exprp());
-                if (isAggregateParamValue(pinp->exprp())) {
+                // '$' (IEEE 1800-2023 6.20.2.1) is not an AstConst, so is named like an aggregate
+                if (isAggregateParamValue(pinp->exprp()) || VN_IS(pinp->exprp(), Unbounded)) {
                     nameByPinValue(pinp, srcModp, modvarp, longnamer, any_overridesr);
                     return;
                 }
@@ -3435,7 +3438,14 @@ class ParamVisitor final : public VNVisitor {
     // Make sure varrefs cause vars to constify before things above
     void visit(AstVarRef* nodep) override {
         // Might jump across functions, so beware if ever add a m_funcp
-        if (nodep->varp()) iterate(nodep->varp());
+        if (!nodep->varp()) return;
+        iterate(nodep->varp());
+        // A parameter of '$' may only be used where a literal '$' may (IEEE 1800-2023 6.20.2.1),
+        // so it is replaced by one, for later passes to handle like that literal
+        if (nodep->varp()->isParam() && VN_IS(nodep->varp()->valuep(), Unbounded)) {
+            nodep->replaceWith(new AstUnbounded{nodep->fileline()});
+            VL_DO_DANGLING(pushDeletep(nodep), nodep);
+        }
     }
     bool ifaceParamReplace(AstVarXRef* nodep, AstNode* candp) {
         for (; candp; candp = candp->nextp()) {
