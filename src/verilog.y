@@ -3512,20 +3512,36 @@ event_control<senTreep>:        // ==IEEE: event_control
 
 event_expression<senItemp>:     // IEEE: event_expression - split over several
         //UNSUP                 // Below are all removed
-                senitem                                 { $$ = $1; }
-        |       event_expression yOR senitem            { $$ = addNextNull($1, $3); }
-        |       event_expression ',' senitem            { $$ = addNextNull($1, $3); } /* Verilog 2001 */
+                senitemExpr                             { $$ = $1; }
+        |       event_expressionNotExpr                 { $$ = $1; }
         //UNSUP                 // Above are all removed, replace with:
         //UNSUP ev_expr                                 { $$ = $1; }
         //UNSUP event_expression ',' ev_expr %prec yOR  { $$ = addNextNull($1, $3); }
         ;
 
+event_expressionNotExpr<senItemp>:  // IEEE: event_expression, except a lone expression
+                senitemNotExpr                          { $$ = $1; }
+        |       event_expression yOR senitem            { $$ = addNextNull($1, $3); }
+        |       event_expression ',' senitem            { $$ = addNextNull($1, $3); } /* Verilog 2001 */
+        ;
+
 senitem<senItemp>:              // IEEE: part of event_expression, non-'OR' ',' terms
-                senitemEdge                             { $$ = $1; }
-        |       expr
+                senitemExpr                             { $$ = $1; }
+        |       senitemNotExpr                          { $$ = $1; }
+        ;
+
+senitemExpr<senItemp>:          // IEEE: part of event_expression
+                expr
                         { $$ = new AstSenItem{$<fl>1, VEdgeType::ET_CHANGED, $1}; }
+        ;
+
+senitemNotExpr<senItemp>:       // IEEE: part of event_expression
+                senitemEdge                             { $$ = $1; }
         |       expr yIFF expr
                         { $$ = new AstSenItem{$<fl>1, VEdgeType::ET_CHANGED, $1, $3}; }
+        //                      // IEEE: '(' event_expression ')'
+        //                      // A parenthesized lone expression is parsed as an expr
+        |       '(' event_expressionNotExpr ')'         { $$ = $2; }
         ;
 
 senitemVar<senItemp>:
@@ -6806,14 +6822,18 @@ sequence_declarationBody<nodep>:  // IEEE: part of sequence_declaration
 property_spec<propSpecp>:               // IEEE: property_spec
         //UNSUP: This rule has been super-specialized to what is supported now
         //UNSUP remove below
-                '@' '(' senitem ')' yDISABLE yIFF '(' expr ')' property_exprSpec
-                        { $$ = $10; $$->fileline($1); $$->sensesp($3); $$->disablep($8); }
-        |       '@' '(' senitem ')' property_exprSpec
-                        { $$ = $5; $$->fileline($1); $$->sensesp($3); }
+                '@' '(' event_expression ')' yDISABLE yIFF '(' expr ')' property_exprSpec
+                        { $$ = $10; $$->fileline($1); $$->addSensesp($3); $$->disablep($8); }
+        |       '@' '(' event_expression ')' property_exprSpec
+                        { $$ = $5; $$->fileline($1); $$->addSensesp($3); }
         |       '@' senitemVar property_exprSpec
-                        { $$ = $3; $$->fileline($1); $$->sensesp($2); }
-        |       yDISABLE yIFF '(' expr ')' '@' '(' senitem ')' property_exprSpec
-                        { $$ = $10; $$->fileline($1); $$->sensesp($8); $$->disablep($4); }
+                        { $$ = $3; $$->fileline($1); $$->addSensesp($2); }
+        |       '@' senitemVar yDISABLE yIFF '(' expr ')' property_exprSpec
+                        { $$ = $8; $$->fileline($1); $$->addSensesp($2); $$->disablep($6); }
+        |       yDISABLE yIFF '(' expr ')' '@' '(' event_expression ')' property_exprSpec
+                        { $$ = $10; $$->fileline($1); $$->addSensesp($8); $$->disablep($4); }
+        |       yDISABLE yIFF '(' expr ')' '@' senitemVar property_exprSpec
+                        { $$ = $8; $$->fileline($1); $$->addSensesp($7); $$->disablep($4); }
         //UNSUP remove above
         |       yDISABLE yIFF '(' expr ')' property_exprSpec
                         { $$ = $6; $$->fileline($4->fileline()); $$->disablep($4); }

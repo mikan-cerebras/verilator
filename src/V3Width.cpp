@@ -3734,6 +3734,10 @@ class WidthVisitor final : public VNVisitor {
             nodep->dtypep(wildp);  // Skip RefDType like for other dynamic array types
         }
         if (VN_IS(nodep->dtypep()->skipRefToConstp(), ConstDType)) nodep->isConst(true);
+        if (nodep->isIO() && !nodep->isFuncLocal() && nodep->isCHandle()) {
+            nodep->v3error(
+                "Chandle type not legal on port (IEEE 1800-2023 6.14): " << nodep->prettyNameQ());
+        }
         // Parameters if implicit untyped inherit from what they are assigned to
         const AstBasicDType* const bdtypep = VN_CAST(nodep->dtypep(), BasicDType);
         bool didchk = false;
@@ -7516,6 +7520,10 @@ class WidthVisitor final : public VNVisitor {
                     return;
                 }
             }
+            if (VN_IS(nodep, AssignW) && nodep->lhsp()->isCHandle()) {
+                nodep->v3error("Continuous assignment not legal to chandle type "
+                               "(IEEE 1800-2023 6.14)");
+            }
             nodep->dtypeFrom(nodep->lhsp());
             //
             // AstPattern needs to know the proposed data type of the lhs, so pass on the prelim
@@ -9261,16 +9269,22 @@ class WidthVisitor final : public VNVisitor {
         if (VN_IS(nodep->sensp(), Concat) || VN_IS(nodep->sensp(), Replicate)) {
             auto* const concatOrReplp = VN_CAST(nodep->sensp(), NodeBiop);
             auto* const rhsp = concatOrReplp->rhsp()->unlinkFrBack();
+            AstNodeExpr* const condp = nodep->condp() ? nodep->condp()->unlinkFrBack() : nullptr;
             if (nodep->edgeType() == VEdgeType::ET_CHANGED) {
                 // If it's ET_CHANGED, split concatenations into multiple senitems
                 auto* const lhsp = concatOrReplp->lhsp()->unlinkFrBack();
-                nodep->addNextHere(new AstSenItem{lhsp->fileline(), nodep->edgeType(), lhsp});
+                nodep->addNextHere(new AstSenItem{lhsp->fileline(), nodep->edgeType(), lhsp,
+                                                  condp ? condp->cloneTreePure(false) : nullptr});
             }  // Else only use the RHS
-            nodep->replaceWith(new AstSenItem{rhsp->fileline(), nodep->edgeType(), rhsp});
+            nodep->replaceWith(new AstSenItem{rhsp->fileline(), nodep->edgeType(), rhsp, condp});
             VL_DO_DANGLING(nodep->deleteTree(), nodep);
         } else {
-            userIterateChildren(nodep, WidthVP{SELF, BOTH}.p());
-            if (nodep->edgeType().anEdge()) {
+            userIterateAndNext(nodep->sensp(), WidthVP{SELF, BOTH}.p());
+            if (nodep->condp()) iterateCheckBool(nodep, "iff condition", nodep->condp(), BOTH);
+            if (nodep->sensp()->isCHandle()) {
+                nodep->sensp()->v3error(
+                    "Event control not legal on chandle type (IEEE 1800-2023 6.14)");
+            } else if (nodep->edgeType().anEdge()) {
                 AstNodeDType* const sensDtp = nodep->sensp()->dtypep()->skipRefp();
                 if (sensDtp->isDouble()) {
                     nodep->sensp()->v3error(

@@ -4,9 +4,9 @@
       |                    ^~
                      ... For warning description see https://verilator.org/warn/WIDTHTRUNC?v=latest
                      ... Use "/* verilator lint_off WIDTHTRUNC */" and lint_on around source to disable this message.
-%Warning-WIDTHEXPAND: t/t_lint_width_bad.v:49:18: Operator ASSIGNW expects 5 bits on the Assign RHS, but Assign RHS's VARREF 'in' generates 4 bits.
+%Warning-WIDTHEXPAND: t/t_lint_width_bad.v:50:18: Operator ASSIGNW expects 5 bits on the Assign RHS, but Assign RHS's VARREF 'in' generates 4 bits.
                                                 : ... note: In instance 't.p4'
-   49 |   wire [4:0] out = in;
+   50 |   wire [4:0] out = in;
       |                  ^
                       ... For warning description see https://verilator.org/warn/WIDTHEXPAND?v=latest
                       ... Use "/* verilator lint_off WIDTHEXPAND */" and lint_on around source to disable this message.
@@ -46,4 +46,8 @@
                                                : ... note: In instance 't'
    40 |   initial if (THREE) $stop;
       |           ^~
+%Warning-WIDTHTRUNC: t/t_lint_width_bad.v:41:13: Logical operator SENITEM expects 1 bit on the iff condition, but iff condition's VARREF 'THREE' generates 41 bits.
+                                               : ... note: In instance 't'
+   41 |   initial @(a iff THREE) $stop;
+      |             ^
 %Error: Exiting due to
