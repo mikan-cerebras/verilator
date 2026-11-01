@@ -1747,7 +1747,7 @@ bool VlRandomizer::parseModel(std::istream& is, size_t requested) {
     return true;
 }
 
-void VlRandomizer::hard(std::string&& constraint, const char* filename, uint32_t linenum,
+void VlRandomizer::hard(std::string constraint, const char* filename, uint32_t linenum,
                         const char* source) {
     m_constraints.emplace_back(std::move(constraint));
     // Format constraint location: "filename:linenum   source"
@@ -1763,7 +1763,7 @@ void VlRandomizer::hard(std::string&& constraint, const char* filename, uint32_t
     }
 }
 
-void VlRandomizer::soft(std::string&& constraint, const char* /*filename*/, uint32_t /*linenum*/,
+void VlRandomizer::soft(std::string constraint, const char* /*filename*/, uint32_t /*linenum*/,
                         const char* /*source*/) {
     m_softConstraints.emplace_back(std::move(constraint));
 }
