@@ -3003,9 +3003,9 @@ class SvaNfaLowering final {
                 AstNodeExpr*& keyFailp = failps[failKey(offsets, fromVtxp)];
                 keyFailp = orExprs(c.flp, keyFailp, rawFailp->cloneTreePure(false));
             }
-            failps.push_back(gateNotKill(c, rawFailp));
+            rejectps.push_back(gateNotKill(c, rawFailp));
         }
-        sigs.requiredStepRejectp = newOrTree(c.flp, failps.cbegin(), failps.cend());
+        sigs.requiredStepRejectp = newOrTree(c.flp, rejectps.cbegin(), rejectps.cend());
 
         computeThroughoutReject(c, sigs, needRejectCount, offsets, failps);
         for (const auto& it : failps) {
