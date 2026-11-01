@@ -56,9 +56,9 @@ module t (
   assert property (a [* 2]);
 
   // An 'and' operand carrying mid-window sources defers to later passes
-  assert property (@(posedge clk) (1'b1 ##[1:2] b) and c);
-  assert property (@(posedge clk) c and (1'b1 ##[1:2] b));
-  assert property (@(posedge clk) (1'b1 ##[1:300] b) and c);
+  assert property (@(posedge clk) (1'b1 ##[1:2] b) and (c ##1 d));
+  assert property (@(posedge clk) (c ##1 d) and (1'b1 ##[1:2] b));
+  assert property (@(posedge clk) (1'b1 ##[1:300] b) and (c ##1 d));
 
   // A boolean 'and' operand of a rejected cover-sequence 'or' is freed
   cover sequence (@(posedge clk) ((a and b) or(c ##1 d)));
@@ -74,5 +74,11 @@ module t (
   // and for a boolean antecedent
   assert property (@(posedge clk) not ((a ##1 b) |=> c));
   assert property (@(posedge clk) not ((a |=> b) or c));
+
+  // A 'not' of a multi-cycle operand below another property operator
+  assert property (@(posedge clk) ((a ##1 b) and (c ##1 d)) or (not (a ##1 b) and not (c ##1 d)));
+
+  // A ranged end of the non-boolean operand of a property 'or'
+  assert property (@(posedge clk) a or (b ##[1:2] c));
 
 endmodule
