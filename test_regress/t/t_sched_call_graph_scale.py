@@ -14,16 +14,18 @@ import vltest_bootstrap
 test.scenarios('vlt')
 test.top_filename = test.obj_dir + "/t_sched_call_graph_scale.v"
 
-# Each method writes its member, awaits its event and calls the next method, so each reaches
-# all methods after it in a chain of N_CHAIN non-virtual methods, or all N_VIRTUAL overrides
-# of a virtual method
+# Each method writes its member, every tenth method awaits its own event, and each method calls
+# the next one, so each reaches all methods after it in a chain of N_CHAIN non-virtual methods,
+# or all N_VIRTUAL overrides of a virtual method. Each of N_INSTANCES module instances has
+# processes calling both.
 N_CHAIN = 1000
 N_VIRTUAL = 300
+N_INSTANCES = 2000
 # Peak memory growth from before V3Delayed to the end of the sched-gather stage, as a share of
 # the peak before (about 0.04 when linear, 1.1 when caching everything reached)
 MAX_GROWTH = 0.25
 # Share of verilation time spent in V3Delayed and the sched-gather stage (about 0.02 when linear,
-# 0.8 when caching everything reached)
+# 0.8 when caching everything reached, 0.3 when walking everything reached for each process)
 MAX_SHARE = 0.15
 # Ignore a high share of a short time, e.g. from a load spike
 MIN_SECONDS = 0.5
@@ -43,7 +45,8 @@ def gen(filename):
                 fh.write(f"  C{i + 1} nxt;\n")
             fh.write("  task run();\n")
             fh.write("    v = v + 1;\n")
-            fh.write(f"    if (v > 100) @(p::e{i});\n")
+            if i % 10 == 0:
+                fh.write(f"    if (v > 100) @(p::e{i});\n")
             if i + 1 < N_CHAIN:
                 fh.write("    if (nxt != null) nxt.run();\n")
             fh.write("  endtask\n")
@@ -58,19 +61,22 @@ def gen(filename):
             fh.write("  Base nxt;\n")
             fh.write("  virtual task run();\n")
             fh.write("    v = v + 1;\n")
-            fh.write(f"    if (v > 100) @(p::e{N_CHAIN + i});\n")
+            if i % 10 == 0:
+                fh.write(f"    if (v > 100) @(p::e{N_CHAIN + i});\n")
             fh.write("    if (nxt != null) nxt.run();\n")
             fh.write("  endtask\n")
             fh.write("endclass\n")
+        fh.write("module m;\n")
+        fh.write("  int x;\n")
+        fh.write("  C0 c = new;\n")
+        fh.write("  V0 b = new;\n")
+        fh.write("  initial begin #1; c.run(); x <= 1; end\n")
+        fh.write("  initial begin #1; b.run(); x <= 2; end\n")
+        fh.write("endmodule\n")
         fh.write("module t;\n")
-        fh.write("  initial begin\n")
-        fh.write("    automatic C0 c = new;\n")
-        fh.write("    automatic V0 b = new;\n")
-        fh.write("    #1;\n")
-        fh.write("    c.run();\n")
-        fh.write("    b.run();\n")
-        fh.write("    $finish;\n")
-        fh.write("  end\n")
+        for i in range(N_INSTANCES):
+            fh.write(f"  m u{i}();\n")
+        fh.write("  initial #2 $finish;\n")
         fh.write("endmodule\n")
 
 
