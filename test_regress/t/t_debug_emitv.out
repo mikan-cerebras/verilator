@@ -81,6 +81,9 @@ module Vt_debug_emitv_t;
             if ((| downto_32[60:54])) begin
                 $write("");
             end
+            if ((array[i1 +: 2] == array[1:2])) begin
+                $write("");
+            end
             if (the_ifaces[2].ifsig) begin
                 $write("");
             end
@@ -209,6 +212,8 @@ module Vt_debug_emitv_t;
             $fflush(fd);
             $fscanf(fd, "%d", sum);
             ;
+            $fscanf(fd, str, sum);
+            ;
             $fdisplay(32'h69203d20, "%d", sum);
             $fwrite(fd, "hello");
             $readmemh(string'(fd), array);
@@ -297,6 +302,8 @@ module Vt_debug_emitv_t;
                      $realtime, $time, $time);
             $sscanf(40'h666f6f3d35, "foo=%d", i);
             ;
+            $sscanf(40'h666f6f3d35, str, i);
+            ;
             $printtimescale;
             if ((i != 'sh5)) begin
                 $stop;
@@ -315,7 +322,7 @@ module Vt_debug_emitv_t;
                     begin
                         $write("%%Error: %s:%0d:  got=%0d exp=%0d\n", 
                                136'h742f745f64656275675f656d6974762e76, 
-                               'sh118, SUB_B, 2'h1);
+                               'sh11c, SUB_B, 2'h1);
                         $stop;
                     end
                 end
@@ -721,6 +728,18 @@ module Vt_debug_emitv_t;
         assert property (@(posedge clk) 
             ???? // IMPLICATION
             inin
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assert_prop_match_item
+        assert property (@(posedge clk) 
+            ???? // IMPLICATION
+            $_EXPRSTMT(
+                $display("match");
+                , in);
+            in
         ) begin
         end
         else begin
@@ -1350,7 +1369,28 @@ module Vt_debug_emitv_seq_event;
 endmodule
 package Vt_debug_emitv_p;
     logic pkgvar;
+    function ident;
+        input int signed value;
+        begin : label5
+            ident = /*CRESET*/;
+            ident = value;
+            disable label5;
+        end
+    endfunction
+    function uses_const_func;
+        logic [1:0]  v;
+        begin : label6
+            uses_const_func = /*CRESET*/;
+            v = /*CRESET*/;
+            uses_const_func = 32'h2;
+            disable label6;
+        end
+    endfunction
 endpackage
+module Vt_debug_emitv_defparam_gen__pie9c2606d;
+    /* generate */ begin : dpg
+    end : dpg
+endmodule
 package Vt_debug_emitv_std;
     class Vt_debug_emitv_process;
         typedef enum int signed{
@@ -1363,7 +1403,7 @@ package Vt_debug_emitv_std;
         VlProcessRef m_process;
         function self;
             Vt_debug_emitv_process pVt_debug_emitv_process;
-            begin : label5
+            begin : label7
                 self = /*CRESET*/;
                 p = /*CRESET*/;
                 $c(vlProcess->initFromSelf(p););
@@ -1375,7 +1415,7 @@ package Vt_debug_emitv_std;
                     end
                 end
                 self = p;
-                disable label5;
+                disable label7;
             end
         endfunction
         task set_status;
@@ -1383,10 +1423,10 @@ package Vt_debug_emitv_std;
             $c(m_process->state(s););
         endtask
         function status;
-            begin : label6
+            begin : label8
                 status = /*CRESET*/;
                 status = ($c(m_process->state()));
-                disable label6;
+                disable label8;
             end
         endfunction
         task kill;
@@ -1422,12 +1462,12 @@ package Vt_debug_emitv_std;
         endtask
         function get_randstate;
             string s;
-            begin : label7
+            begin : label9
                 get_randstate = /*CRESET*/;
                 s = (string'($c(0)));
                 $c(s = m_process->randstate(););
                 get_randstate = s;
-                disable label7;
+                disable label9;
             end
         endfunction
         task set_randstate;
@@ -1467,7 +1507,7 @@ package Vt_debug_emitv_std;
         endtask
         task get;
             input int signed keyCount;
-            begin : label8
+            begin : label10
                 dropKilled();
                 if (((m_keyCount >= keyCount) && ((
                                                    m_queue.size() 
@@ -1480,7 +1520,7 @@ package Vt_debug_emitv_std;
                     begin
                         m_keyCount = (m_keyCount - 
                                       keyCount);
-                        disable label8;
+                        disable label10;
                     end
                 end
                 m_queue.push_back(
@@ -1506,15 +1546,15 @@ package Vt_debug_emitv_std;
         endtask
         function try_get;
             input int signed keyCount;
-            begin : label9
+            begin : label11
                 try_get = /*CRESET*/;
                 if ((m_keyCount < keyCount)) begin
                     try_get = 'sh0;
-                    disable label9;
+                    disable label11;
                 end
                 m_keyCount = (m_keyCount - keyCount);
                 try_get = 'sh1;
-                disable label9;
+                disable label11;
             end
         endfunction
     endclass
@@ -1591,3 +1631,9 @@ package Vt_debug_emitv_Pkg;
         killQueue(__VprocessQueue_named__0);
     endtask
 endpackage
+module Vt_debug_emitv_defparam_leaf;
+    bit signed [31:0]  P;
+endmodule
+module Vt_debug_emitv_defparam_leaf__P2;
+    bit signed [31:0]  P;
+endmodule
