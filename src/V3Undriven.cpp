@@ -635,10 +635,13 @@ class UndrivenVisitor final : public VNVisitorConst {
     }
     void visit(AstSliceSel* nodep) override {
         // Arrays are rarely constant assigned, so for now we punt and do all entries.
-        // Slice bounds are constant, so a slice is a partial write, as for AstArraySel.
-        VL_RESTORER(m_inSelLhs);
-        m_inSelLhs = true;
-        iterateChildrenConst(nodep);
+        // As for AstArraySel, a slice at a constant position is a partial write.
+        {
+            VL_RESTORER(m_inSelLhs);
+            m_inSelLhs = !V3Width::selectNonConstantRecurse(nodep->lsbp(), /*inSel=*/true);
+            iterateConst(nodep->fromp());
+        }
+        iterateConst(nodep->lsbp());
     }
     void visit(AstSel* nodep) override {
         AstNodeVarRef* const varrefp = VN_CAST(nodep->fromp(), NodeVarRef);
