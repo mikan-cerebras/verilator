@@ -4612,8 +4612,10 @@ class LinkDotResolveVisitor final : public VNVisitor {
             string baddot;
             VSymEnt* okSymp = nullptr;
             // Restricted 'with (id_list)': only id_list names bind into target class.
+            // Outside 'with', only arguments of obj.randomize(...) bind into it.
             if (m_randSymp
-                && (!m_currentWithp || m_currentWithp->nameResolvesToTarget(nodep->name()))) {
+                && (m_currentWithp ? m_currentWithp->nameResolvesToTarget(nodep->name())
+                                   : m_randMethodCallp != nullptr)) {
                 foundp = m_randSymp->findIdFlat(nodep->name());
                 if (foundp) {
                     if (m_currentWithp && m_currentWithp->restricted()) {
@@ -4635,6 +4637,17 @@ class LinkDotResolveVisitor final : public VNVisitor {
                         return;
                     }
                     UINFO(9, indent() << "randomize-with fromSym " << foundp->nodep());
+                    if (AstVar* const varp = VN_CAST(foundp->nodep(), Var)) {
+                        if (varp->isParam()) {
+                            // Constant, so usable where one is required (e.g. a cast width)
+                            AstVarRef* const newp
+                                = new AstVarRef{nodep->fileline(), varp, VAccess::READ};
+                            newp->classOrPackagep(foundp->classOrPackagep());
+                            nodep->replaceWith(newp);
+                            VL_DO_DANGLING(pushDeletep(nodep), nodep);
+                            return;
+                        }
+                    }
                     AstLambdaArgRef* const lambdaRefp
                         = new AstLambdaArgRef{nodep->fileline(), "__Vrandwith_obj", false};
                     AstMemberSel* newp = new AstMemberSel{nodep->fileline(), lambdaRefp,
@@ -4707,7 +4720,13 @@ class LinkDotResolveVisitor final : public VNVisitor {
                        || VN_IS(foundp->nodep(), Module)) {  // if top
                 if (allowScope) {
                     ok = true;
-                    m_ds.m_dotText = VString::dot(m_ds.m_dotText, ".", nodep->name());
+                    // Like a task used as scope (see below), a block in one is not in the text.
+                    // Only such a task leaves no text before a later component: 'pkg::' and
+                    // 'Cls::' also leave none, but no block follows them but through a task,
+                    // and what follows 'local::' is first.
+                    if (first || m_ds.m_dotPos != DP_SCOPE || !m_ds.m_dotText.empty()) {
+                        m_ds.m_dotText = VString::dot(m_ds.m_dotText, ".", nodep->name());
+                    }
                     m_ds.m_dotSymp = foundp;
                     m_ds.m_dotPos = DP_SCOPE;
                     if (m_ds.m_disablep && VN_IS(foundp->nodep(), NodeBlock)) {
@@ -4818,6 +4837,38 @@ class LinkDotResolveVisitor final : public VNVisitor {
 
                     VL_DO_DANGLING(pushDeletep(nodep), nodep);
                 } else if (allowVar) {
+                    VSymEnt* scopeSymp = m_ds.m_dotSymp;
+                    while (VN_IS(scopeSymp->nodep(), NodeBlock)) scopeSymp = scopeSymp->parentp();
+                    const AstNodeFTask* const ftaskp = VN_CAST(scopeSymp->nodep(), NodeFTask);
+                    if (!first && (VN_IS(ftaskp, Property) || VN_IS(ftaskp, Sequence))) {
+                        // Items of a sequence or property are not visible outside of it
+                        if (varp->isIO()) {
+                            nodep->v3error("Hierarchical reference to "
+                                           << varp->prettyNameQ()
+                                           << ", a formal argument of a sequence or property");
+                        } else {
+                            nodep->v3error("Hierarchical reference to "
+                                           << varp->prettyNameQ()
+                                           << ", a local variable of a sequence or property"
+                                              " (IEEE 1800-2023 16.10)");
+                        }
+                        // No second error on the dotted path; the reference becomes a constant
+                        m_ds.m_dotText = "";
+                        m_ds.m_dotErr = true;
+                    } else if (!first && ftaskp && ftaskp != m_ftaskp
+                               && varp->lifetime().isAutomatic()) {
+                        // Items of an automatic task or function cannot be referenced
+                        // hierarchically from outside of it
+                        if (varp->isIO() && !ftaskp->lifetime().isAutomatic()) {
+                            // Static task/function ports are static, though V3LinkParse marks
+                            // them automatic when not needed after the call
+                            varp->lifetime(VLifetime::STATIC_IMPLICIT);
+                        } else {
+                            nodep->v3error("Automatic variable cannot be referenced"
+                                           " hierarchically (IEEE 1800-2023 13.3.1, 13.4.2): "
+                                           << varp->prettyNameQ());
+                        }
+                    }
                     AstNode* newp;
                     if (m_ds.m_dotText != "") {
                         AstVarXRef* const refp
@@ -5428,7 +5479,6 @@ class LinkDotResolveVisitor final : public VNVisitor {
         {
             m_ds.init(m_curSymp);
             if (nodep->name() == "randomize" && (nodep->argsp() || nodep->withp())) {
-                m_randMethodCallp = nodep;
                 const AstNodeDType* fromDtp = nodep->fromp()->dtypep();
                 if (!fromDtp) {
                     if (const AstNodeVarRef* const varRefp = VN_CAST(nodep->fromp(), NodeVarRef)) {
@@ -5458,20 +5508,27 @@ class LinkDotResolveVisitor final : public VNVisitor {
                     } else {
                         const AstClassRefDType* const classDtp
                             = VN_CAST(resolvedDtp, ClassRefDType);
-                        if (!classDtp)
+                        if (!classDtp) {
                             nodep->v3error("'randomize() with' on a non-class-instance "
                                            << fromDtp->prettyNameQ());
-                        else if (m_statep->forPrimary()
-                                 && m_extendsParam.count(classDtp->classp())) {
-                            // Inherited members are unavailable until the base class is
-                            // specialized. Defer lookup rather than incorrectly binding names in
-                            // the caller.
-                            m_ds.m_unresolvedClass = true;
                         } else {
-                            m_randSymp = m_statep->getNodeSym(classDtp->classp());
+                            // A target class later in the netlist has not imported its
+                            // inherited members yet. Import before setting m_randMethodCallp,
+                            // as the class body is not under this call.
+                            classExtendImport(classDtp->classp());
+                            if (m_statep->forPrimary()
+                                && m_extendsParam.count(classDtp->classp())) {
+                                // Inherited members are unavailable until the base class is
+                                // specialized. Defer lookup rather than incorrectly binding
+                                // names in the caller.
+                                m_ds.m_unresolvedClass = true;
+                            } else {
+                                m_randSymp = m_statep->getNodeSym(classDtp->classp());
+                            }
                         }
                     }
                 }
+                m_randMethodCallp = nodep;
             }
             iterateChildren(nodep);
         }
@@ -5515,6 +5572,14 @@ class LinkDotResolveVisitor final : public VNVisitor {
         if (m_ds.m_dotPos != DP_MEMBER || nodep->name() != "randomize") {
             // Visit arguments at the beginning.
             // They may be visitted even if the current node can't be linked now.
+            VL_RESTORER(m_randSymp);
+            // An in-class 'randomize() with' targets this object (IEEE 1800-2023 18.7)
+            if (nodep->name() == "randomize" && m_ds.m_dotPos != DP_PACKAGE) {
+                // Inherited members are unavailable until the base class is specialized.
+                // Defer the call rather than binding names of the 'with' in the caller.
+                if (m_statep->forPrimary() && m_insideClassExtParam) return;
+                m_randSymp = getThisClassSymp();
+            }
             symIterateChildren(nodep, m_curSymp);
         }
 
