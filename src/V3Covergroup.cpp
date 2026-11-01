@@ -289,13 +289,16 @@ class FunctionalCoverageVisitor final : public VNVisitor {
         AstVar* baseVarp;  // Base enclosing-class member in the event expression
         AstVar* memberVarp;  // Selected member in a 'base.member' expression, or nullptr
         VEdgeType edgeType;  // Clocking-event edge qualifier
+        AstNodeExpr* condp;  // Clocking-event 'iff' guard, or nullptr; in the event, which
+        // is pushDeletep'd, so valid until this visitor is destroyed
         AstVar* prevVarp;  // Member containing the previous event value, or nullptr
         EmbeddedEventTrigger(FileLine* eventFl, AstVar* baseVarp, AstVar* memberVarp,
-                             VEdgeType edgeType)
+                             VEdgeType edgeType, AstNodeExpr* condp)
             : eventFl{eventFl}
             , baseVarp{baseVarp}
             , memberVarp{memberVarp}
             , edgeType{edgeType}
+            , condp{condp}
             , prevVarp{nullptr} {}
     };
 
@@ -4446,16 +4449,6 @@ class FunctionalCoverageVisitor final : public VNVisitor {
         return vars;
     }
 
-    bool hasEnclosingEventRef(AstCovergroup* cgp) const {
-        if (!m_embeddedVarp || !cgp->eventp()) return false;
-        const std::set<const AstVar*> enclosingVars = enclosingInstanceVars();
-        bool found = false;
-        cgp->eventp()->foreach([&](AstVarRef* refp) {
-            if (enclosingVars.count(refp->varp())) found = true;
-        });
-        return found;
-    }
-
     static bool parseEmbeddedEventExpr(AstNodeExpr* exprp, AstVar*& baseVarp,
                                        AstVar*& memberVarp) {
         if (AstVarRef* const refp = VN_CAST(exprp, VarRef)) {
@@ -4508,11 +4501,30 @@ class FunctionalCoverageVisitor final : public VNVisitor {
         return callp->makeStmt();
     }
 
+    // Route references to the covergroup's own members, e.g. its arguments, through its handle
+    void rebindCovergroupMemberRefs(AstNode* nodep) {
+        std::vector<AstVarRef*> refps;
+        nodep->foreach([&](AstVarRef* refp) {
+            if (m_memberMap.findMember(m_covergroupp, refp->varp()->name()) == refp->varp())
+                refps.push_back(refp);
+        });
+        for (AstVarRef* const refp : refps) rewriteVarRef(refp, m_embeddedVarp);
+    }
+
     void installEmbeddedEventFork(AstSenTree* eventp,
                                   const std::vector<AstNodeAssign*>& constructps) {
         // IEEE 1800-2023 19.3 samples coverpoints whenever their clocking event occurs. A
         // per-instance event cannot use V3Active's static sensitivity path, so spawn
         // 'fork forever begin @(event); cg.sample(); end join_none' after each construction.
+        // The event may read the instance's members, such as its arguments, so its 'iff' guards
+        // are evaluated only while the instance exists
+        eventp->foreach([&](AstSenItem* itemp) {
+            if (AstNodeExpr* const condp = itemp->condp()) {
+                FileLine* const fl = condp->fileline();
+                itemp->condp(new AstLogAnd{fl, newEmbeddedVarNonNull(fl), condp->unlinkFrBack()});
+            }
+        });
+        rebindCovergroupMemberRefs(eventp);
         for (AstNodeAssign* const constructp : constructps) {
             FileLine* const fl = constructp->fileline();
             AstLoop* const loopp = new AstLoop{fl};
@@ -4526,7 +4538,7 @@ class FunctionalCoverageVisitor final : public VNVisitor {
         VL_DO_DANGLING(pushDeletep(eventp), eventp);
     }
 
-    AstNodeExpr* newEventReadyCondition(FileLine* fl, const EmbeddedEventTrigger& trigger) const {
+    AstNodeExpr* newEventReadyCondition(FileLine* fl, const EmbeddedEventTrigger& trigger) {
         AstNodeExpr* const curp = newEventRead(fl, trigger);
         AstNodeExpr* const prevp = new AstVarRef{fl, trigger.prevVarp, VAccess::READ};
         AstNodeExpr* edgep = nullptr;
@@ -4540,6 +4552,10 @@ class FunctionalCoverageVisitor final : public VNVisitor {
             edgep = new AstSel{fl, new AstXor{fl, curp, prevp}, 0, 1};
         } else {
             edgep = new AstNeq{fl, curp, prevp};
+        }
+        if (trigger.condp) {
+            edgep = new AstLogAnd{fl, edgep, trigger.condp->cloneTree(false)};
+            rebindCovergroupMemberRefs(edgep);
         }
         return new AstLogAnd{fl, newEmbeddedVarNonNull(fl), edgep};
     }
@@ -4555,7 +4571,8 @@ class FunctionalCoverageVisitor final : public VNVisitor {
                 || !enclosingVars.count(baseVarp)) {
                 return {};
             }
-            triggers.emplace_back(itemp->fileline(), baseVarp, memberVarp, itemp->edgeType());
+            triggers.emplace_back(itemp->fileline(), baseVarp, memberVarp, itemp->edgeType(),
+                                  itemp->condp());
         }
         return triggers;
     }
@@ -4813,17 +4830,18 @@ class FunctionalCoverageVisitor final : public VNVisitor {
                     // event exists, so cgp->eventp() is always non-null here.
                     UASSERT_OBJ(cgp->eventp(), cgp,
                                 "Sentinel AstCovergroup in class must have non-null eventp");
-                    if (hasEnclosingEventRef(cgp)) {
-                        UASSERT_OBJ(m_embeddedVarp, cgp,
-                                    "Embedded covergroup event has no instance variable");
+                    // Every embedded covergroup takes the per-instance path: the static
+                    // processes V3Active creates cannot sample a per-object member
+                    if (m_embeddedVarp) {
                         if (v3Global.opt.timing().isSetTrue()) {
                             embeddedEventForkp = cgp->eventp()->unlinkFrBack();
                         } else {
                             embeddedEventTriggers = collectEmbeddedEventTriggers(cgp);
                             if (embeddedEventTriggers.empty()) {
                                 cgp->v3warn(COVERIGN,
-                                            "Unsupported: 'covergroup' clocking event on complex "
-                                            "member expression; use --timing for full support.");
+                                            "Unsupported: embedded 'covergroup' clocking event "
+                                            "other than on simple non-static members of the "
+                                            "enclosing class; use --timing for full support.");
                                 hasUnsupportedEvent = true;
                             }
                         }
