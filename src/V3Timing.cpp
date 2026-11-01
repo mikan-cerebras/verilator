@@ -940,7 +940,8 @@ class TimingControlVisitor final : public VNVisitor {
         nodep->rtnType("VlCoroutine");
         // If in a class, create a shared pointer to 'this'
         if (m_classp) {
-            AstCStmt* const cstmtp = new AstCStmt{nodep->fileline(), "VL_KEEP_THIS;"};
+            AstCStmt* const cstmtp
+                = new AstCStmt{nodep->fileline(), "VL_KEEP_THIS;", VCStmtType::KEEP_THIS};
             nodep->prependStmtsp(cstmtp);
         }
         if (nodep->dpiExportImpl()) {
