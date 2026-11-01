@@ -26,4 +26,46 @@ module t;
     $write("*-* All Finished *-*\n");
     $finish;
   end
+
+  class Cls;
+  endclass
+  class Other;
+  endclass
+
+  initial begin
+    Cls cq[$];
+    Cls cd[];
+    Other o;
+    // Item of an incompatible type, so neither an element nor an array
+    cq = {cq, o};
+    cd = {o, cd};
+    cq = '{o};
+  end
+
+  initial begin
+    Cls cq[$];
+    Other oq[$];
+    Other od[];
+    Other ou[2];
+    Other ob[$:2];
+    // Array of an incompatible type, so not an array of elements
+    cq = {cq, oq};
+    cq = {od, cq};
+    cq = {cq, ou};
+    cq = {cq, ob};
+  end
+
+  initial begin
+    Cls c;
+    Cls cq[$];
+    int iq[$];
+    int id[];
+    // Class handle and integral items or arrays, so neither an element nor an array of them
+    iq = {iq, c};
+    id = {c, id};
+    iq = '{c};
+    cq = {cq, 5};
+    iq = {iq, cq};
+    cq = {cq, iq};
+  end
 endmodule
