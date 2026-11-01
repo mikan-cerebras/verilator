@@ -950,9 +950,9 @@ public:
         }
     }
 
-    void hard(std::string&& constraint, const char* filename = "", uint32_t linenum = 0,
+    void hard(std::string constraint, const char* filename = "", uint32_t linenum = 0,
               const char* source = "");
-    void soft(std::string&& constraint, const char* filename = "", uint32_t linenum = 0,
+    void soft(std::string constraint, const char* filename = "", uint32_t linenum = 0,
               const char* source = "");
     void pin_var(const char* name, int width, uint64_t value) {
         std::string constraint = "(__Vbv (= "s + name + " (_ bv" + std::to_string(value) + " "
