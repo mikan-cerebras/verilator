@@ -99,6 +99,7 @@ private:
     AstSenItem* m_senip = nullptr;  // Last sensitivity
     // Reset each always:
     AstSenItem* m_seniAlwaysp = nullptr;  // Last sensitivity in always
+    AstSenItem* m_seniInferredp = nullptr;  // Clock inferred from that always
     // Reset each assertion:
     AstNodeExpr* m_disablep = nullptr;  // Last disable
     AstIf* m_disableSeqIfp = nullptr;  // Used for handling disable iff in sequences
@@ -267,7 +268,11 @@ private:
         AstSenTree* newp = nullptr;
         AstSenItem* senip = m_senip;
         bool fromAlways = false;
-        if (!senip && m_defaultClockingp) senip = m_defaultClockingp->sentreep()->sensesp();
+        // A clock inferred from the always procedure takes precedence over default clocking
+        // (IEEE 1800-2023 16.9.3, 16.16)
+        if (!senip && m_defaultClockingp && !m_seniInferredp) {
+            senip = m_defaultClockingp->sentreep()->sensesp();
+        }
         if (!senip) {
             senip = m_seniAlwaysp;
             fromAlways = true;
@@ -469,7 +474,7 @@ private:
         m_clockingp = nodep;
         UINFO(8, "   CLOCKING" << nodep);
         if (nodep->isDefault()) {
-            if (m_defaultClockingp) {
+            if (m_defaultClockingp && m_defaultClockingp != nodep) {
                 nodep->v3error("Only one default clocking block allowed per module"
                                " (IEEE 1800-2023 14.12)");
             } else {
@@ -938,8 +943,10 @@ private:
         }
     }
     void visit(AstAlways* nodep) override {
+        VL_RESTORER(m_seniInferredp);
         iterateAndNextNull(nodep->sentreep());
         if (nodep->sentreep()) m_seniAlwaysp = nodep->sentreep()->sensesp();
+        m_seniInferredp = V3AssertCommon::inferredClock(nodep);
         iterateAndNextNull(nodep->stmtsp());
         m_seniAlwaysp = nullptr;
     }
@@ -1881,8 +1888,9 @@ private:
         VL_RESTORER(m_modp);
         if (!VN_IS(nodep, Class)) {
             // A class nested in a module is in the scope of the module's default clocking
-            m_defaultClockingp = nullptr;
-            m_defaultClkEvtVarp = nullptr;
+            m_defaultClockingp = V3AssertCommon::moduleDefaultClockingp(nodep);
+            m_defaultClkEvtVarp
+                = m_defaultClockingp ? m_defaultClockingp->ensureEventp() : nullptr;
         }
         m_defaultDisablep = nodep->defaultDisablep();
         m_modp = nodep;
