@@ -585,7 +585,8 @@ public:
         bool paren = true;
         bool decind = false;
         bool rhs = true;
-        std::string reverseUnpackCall;  // Set for CvtPackedToArray with descending dimensions
+        // Set for CvtPackedToArray/CvtArrayToArray with descending dimensions
+        std::string reverseUnpackCall;
         const AstUnpackArrayDType* const unpackDtp
             = VN_CAST(nodep->dtypep()->skipRefp(), UnpackArrayDType);
         if (AstSel* const selp = VN_CAST(nodep->lhsp(), Sel)) {
@@ -674,6 +675,8 @@ public:
             puts(cvtToStr(castp->srcElementBits()));
             puts(", ");
             puts(cvtToStr(castp->dstElementBits()));
+            // Descending unpacked dest: reverse after copy
+            if (unpackDtp) reverseUnpackCall = EmitCUtil::unpackReverseCall(unpackDtp);
         } else if (nodep->isWide() && VN_IS(nodep->lhsp(), VarRef)  //
                    && !VN_IS(nodep->rhsp(), CExpr)  //
                    && !VN_IS(nodep->rhsp(), CMethodHard)  //
@@ -1718,8 +1721,11 @@ public:
         //an error
         bool backpIsParent = (nodep->backp()->op1p() == nodep || nodep->backp()->op2p() == nodep);
         UASSERT(backpIsParent, "can not find return type for streamR");
-        if (const AstQueueDType* const qdtp
-            = VN_CAST(nodep->backp()->dtypep()->skipRefp(), QueueDType)) {
+        const AstQueueDType* const qdtp
+            = VN_IS(nodep->backp(), NodeAssign)
+                  ? VN_CAST(nodep->backp()->dtypep()->skipRefp(), QueueDType)
+                  : nullptr;
+        if (qdtp) {
             if (nodep->lhsp()->isWide()) {
                 emitOpName(nodep,
                            "VL_STREAMR_%nq%lq%rq(%lw," + std::to_string(qdtp->subDTypep()->width())

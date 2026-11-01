@@ -389,8 +389,7 @@ class WidthVisitor final : public VNVisitor {
             nodep->replaceWith(newp);
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
             iterateCheckIntegralSelf(parentp, side, newp, SELF, BOTH);
-        } else if (AstUnpackArrayDType* const unpackDTypep
-                   = VN_CAST(nodep->dtypep(), UnpackArrayDType)) {
+        } else if (AstUnpackArrayDType* const unpackDTypep = VN_CAST(dtypep, UnpackArrayDType)) {
             const int elementsNum = unpackDTypep->arrayUnpackedElements();
             const int unpackMinBits = elementsNum * unpackDTypep->subDTypep()->widthMin();
             const int unpackBits = elementsNum * unpackDTypep->subDTypep()->width();
@@ -1184,7 +1183,22 @@ class WidthVisitor final : public VNVisitor {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
             m_streamConcat = true;
-            iterateCheckSelf(nodep, "LHS", nodep->lhsp(), SELF, BOTH);
+            userIterateAndNext(nodep->lhsp(), WidthVP{SELF, PRELIM}.p());
+            // A real, or an array of them, is not a bit-stream type, though V3Const streams the
+            // bits of real structure members
+            const AstNodeDType* elemDtypep = nodep->lhsp()->dtypep()->skipRefp();
+            while (elemDtypep->isNonPackedArray()) {
+                elemDtypep = elemDtypep->subDTypep()->skipRefp();
+            }
+            if (elemDtypep->isDouble()) {
+                nodep->v3error("Stream operand of type "
+                               << nodep->lhsp()->dtypep()->prettyDTypeNameQ()
+                               << " is not a bit-stream type (IEEE 1800-2023 6.24.3, 11.4.14)");
+                AstNode* const oldp = nodep->lhsp();
+                oldp->replaceWith(new AstConst{oldp->fileline(), AstConst::BitFalse{}});
+                VL_DO_DANGLING(pushDeletep(oldp), oldp);
+            }
+            iterateCheckSelf(nodep, "LHS", nodep->lhsp(), SELF, FINAL);
             m_streamConcat = false;
             iterateCheckSelf(nodep, "RHS", nodep->rhsp(), SELF, BOTH);
             V3Const::constifyParamsEdit(nodep->rhsp());  // rhsp may change
@@ -8316,6 +8330,23 @@ class WidthVisitor final : public VNVisitor {
                 nodep->exprp()->v3error("Streaming concatenation cannot be connected to '"
                                         << pinDirection.prettyName()
                                         << "' port (IEEE 1800-2023 11.4.14)");
+            } else if (VN_IS(nodep->exprp(), NodeStream)
+                       && nodep->modVarp()->dtypep()->skipRefp()->isDynamicallySized()) {
+                const AstNodeDType* const portDTypep = nodep->modVarp()->dtypep()->skipRefp();
+                if (VN_IS(portDTypep, AssocArrayDType) || VN_IS(portDTypep, WildcardArrayDType)) {
+                    // Not a bit-stream type (IEEE 1800-2023 6.24.3)
+                    nodep->exprp()->v3error("Streaming concatenation cannot be connected to "
+                                            "associative array port "
+                                            << nodep->modVarp()->prettyNameQ()
+                                            << " (IEEE 1800-2023 11.4.14)");
+                } else {
+                    nodep->exprp()->v3warn(E_UNSUPPORTED,
+                                           "Unsupported: Streaming concatenation connected to "
+                                           "dynamically sized port "
+                                               << nodep->modVarp()->prettyNameQ());
+                }
+                pushDeletep(nodep->exprp()->unlinkFrBack());
+                return;
             }
             if (pinDirection == VDirection::INOUT) {
                 nodep->exprp()->foreach([nodep](const AstNodeVarRef* refp) {
@@ -12752,11 +12783,28 @@ public:
         VL_DO_DANGLING(pushDeletep(packedp), packedp);
         return newp;
     }
+    // Report an array whose elements streaming cannot fill, and return whether reported
+    static bool badStreamTargetArray(AstNode* nodep, const AstNodeDType* dtypep) {
+        // Elements are filled from the stream bits, so must have a fixed number of bits
+        if (!dtypep->isNonPackedArray()) return false;
+        while (dtypep->isNonPackedArray()) dtypep = dtypep->subDTypep()->skipRefp();
+        if (dtypep->isIntegralOrPacked() || VN_IS(dtypep, NodeUOrStructDType)) return false;
+        if (dtypep->isString() || VN_IS(dtypep, ClassRefDType)) {
+            nodep->v3warn(E_UNSUPPORTED, "Unsupported: Stream assignment to an array of "
+                                             << dtypep->prettyDTypeNameQ());
+        } else {
+            nodep->v3error("Stream assignment to an array of "
+                           << dtypep->prettyDTypeNameQ()
+                           << ", which is not a bit-stream type (IEEE 1800-2023 6.24.3)");
+        }
+        return true;
+    }
     void streamAssignLower(AstNodeAssign* nodep) {
         AstNodeDType* lhsDTypep = nodep->lhsp()->dtypep();
         // Check width of stream and wrap if needed
         if (AstNodeStream* const streamp = VN_CAST(nodep->rhsp(), NodeStream)) {
             AstNodeDType* const lhsDTypeSkippedRefp = lhsDTypep->skipRefp();
+            if (badStreamTargetArray(nodep, lhsDTypeSkippedRefp)) return;
             // A string target is not fixed size, it takes the whole stream
             const int lwidth
                 = lhsDTypeSkippedRefp->isString() ? 0 : lhsDTypeSkippedRefp->widthStream();
@@ -12767,21 +12815,73 @@ public:
                                        << lwidth << " bits) is narrower than the stream ("
                                        << rwidth << " bits) (IEEE 1800-2023 11.4.14)");
             }
-            if (VN_IS(streamp->lhsp()->dtypep()->skipRefp(), QueueDType)
-                && !VN_IS(lhsDTypeSkippedRefp, QueueDType) && !lhsDTypeSkippedRefp->isString()) {
-                const int queueElementSize = streamp->lhsp()->dtypep()->subDTypep()->width();
-                UASSERT_OBJ(queueElementSize <= lwidth, nodep, "LHS < RHS");
+            const AstNodeDType* const srcDTypep = streamp->lhsp()->dtypep()->skipRefp();
+            if (lwidth != 0 && srcDTypep->isDynamicallySized()
+                && srcDTypep->subDTypep()->widthStream() > lwidth) {
+                nodep->v3error("Target fixed size variable ("
+                               << lwidth << " bits) is narrower than each element of the stream ("
+                               << srcDTypep->subDTypep()->widthStream()
+                               << " bits) (IEEE 1800-2023 11.4.14)");
             }
-            if (VN_IS(lhsDTypeSkippedRefp, UnpackArrayDType)
-                || lowerAsFixedAggregate(lhsDTypeSkippedRefp)) {
-                streamp->unlinkFrBack();
-                nodep->rhsp(
-                    new AstCvtPackedToArray{streamp->fileline(), streamp, lhsDTypeSkippedRefp});
+            const bool dynamic = VN_IS(srcDTypep, QueueDType) || VN_IS(srcDTypep, DynArrayDType);
+            const bool fixedTarget = VN_IS(lhsDTypeSkippedRefp, UnpackArrayDType)
+                                     || lowerAsFixedAggregate(lhsDTypeSkippedRefp);
+            // V3Const streams a dynamically sized operand as into a queue
+            const bool asQueue
+                = dynamic && VN_IS(lhsDTypeSkippedRefp, UnpackArrayDType)
+                  && lhsDTypeSkippedRefp->subDTypep()->skipRefp()->isIntegralOrPacked();
+            if (fixedTarget && dynamic && !asQueue) {
+                nodep->v3warn(E_UNSUPPORTED,
+                              "Unsupported: Stream of a dynamically sized array into "
+                                  << lhsDTypeSkippedRefp->prettyDTypeNameQ());
+            }
+            const bool packedToDynamic = (VN_IS(lhsDTypeSkippedRefp, DynArrayDType)
+                                          || VN_IS(lhsDTypeSkippedRefp, QueueDType))
+                                         && lhsDTypeSkippedRefp->subDTypep()->isIntegralOrPacked()
+                                         && !VN_IS(streamp->dtypep(), StreamDType);
+            if ((packedToDynamic || fixedTarget) && !asQueue) {
+                FileLine* const flp = streamp->fileline();
+                AstNodeExpr* srcp = streamp->unlinkFrBack();
+                if (VN_IS(srcDTypep, UnpackArrayDType) && !lowerAsFixedAggregate(srcDTypep)) {
+                    // Convert an unpacked array operand to the target through its packed value
+                    packIfUnpacked(streamp, "LHS", streamp->lhsp());
+                    streamp->dtypeFrom(streamp->lhsp());
+                }
+                if (packedToDynamic) {
+                    // Zero-fill to a whole number of elements as for a queue target before:
+                    // a '>>' stream on the left, as a queue source is read back, a '<<' stream
+                    // on the right. IEEE 1800-2023 11.4.14 zero-fills both on the right.
+                    const int elemWidth = lhsDTypeSkippedRefp->subDTypep()->width();
+                    const int padWidth = (elemWidth - srcp->width() % elemWidth) % elemWidth;
+                    if (padWidth) {
+                        // Finish the stream now, as the concatenation would reject it as its
+                        // operand when iterated
+                        userIterate(srcp, WidthVP{SELF, FINAL, STREAM_USE_ASSIGN}.p());
+                        AstConst* const zerop
+                            = new AstConst{flp, AstConst::WidthedValue{}, padWidth, 0};
+                        srcp = VN_IS(srcp, StreamR) ? new AstConcat{flp, zerop, srcp}
+                                                    : new AstConcat{flp, srcp, zerop};
+                        srcp->didWidth(true);
+                    }
+                } else if (!lowerAsFixedAggregate(lhsDTypeSkippedRefp)
+                           && !VN_IS(srcp->dtypep(), StreamDType) && lwidth > srcp->width()) {
+                    // IEEE 1800-2023 11.4.14: A stream narrower than a fixed-size target is
+                    // left-justified, zero-filled on the right, as V3Const does for structures.
+                    // Finish the stream now, as the concatenation would reject it as its
+                    // operand when iterated.
+                    userIterate(srcp, WidthVP{SELF, FINAL, STREAM_USE_ASSIGN}.p());
+                    srcp = new AstConcat{
+                        flp, srcp,
+                        new AstConst{flp, AstConst::WidthedValue{}, lwidth - srcp->width(), 0}};
+                    srcp->didWidth(true);
+                }
+                nodep->rhsp(new AstCvtPackedToArray{flp, srcp, lhsDTypeSkippedRefp});
             }
         }
         if (AstNodeStream* const streamp = VN_CAST(nodep->lhsp(), NodeStream)) {
             const AstNodeDType* const rhsDTypep = nodep->rhsp()->dtypep()->skipRefp();
             AstNodeDType* const lhsStreamDTypep = streamp->lhsp()->dtypep()->skipRefp();
+            if (badStreamTargetArray(nodep, lhsStreamDTypep)) return;
             const int lwidth = lhsStreamDTypep->widthStream();
             const int rwidth = rhsDTypep->widthStream();
             if (rwidth != 0 && rwidth < lwidth) {
@@ -12810,7 +12910,8 @@ public:
                 nodep->lhsp(dstp);
                 nodep->rhsp(new AstCvtPackedToArray{srcp->fileline(), srcp, lhsStreamDTypep});
                 nodep->dtypeFrom(dstp);
-            } else if (VN_IS(rhsDTypep, UnpackArrayDType)) {
+            } else if (VN_IS(rhsDTypep, UnpackArrayDType) && !lowerAsFixedAggregate(rhsDTypep)) {
+                // V3Const packs an array of unpacked structures
                 AstNodeExpr* const rhsp = nodep->rhsp()->unlinkFrBack();
                 nodep->rhsp(new AstCvtArrayToPacked{rhsp->fileline(), rhsp, streamp->dtypep()});
             }
