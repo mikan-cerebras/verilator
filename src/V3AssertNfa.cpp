@@ -863,19 +863,36 @@ class SvaNfaBuilder final {
             // Weak always [lo:$]: unbounded upper bound (IEEE 1800-2023 16.12.11).
             // p must hold at every clock tick at least lo cycles after the attempt
             // start; those ticks are not required to exist, so there is no
-            // end-of-trace obligation (weak). The self-loop keeps the attempt live
-            // every cycle; each observed cycle is a safety obligation, so a false p
-            // rejects immediately.
+            // end-of-trace obligation (weak). Each observed cycle is a safety
+            // obligation, so a false p rejects immediately and ends the attempt.
+            // A registered vertex holds the attempt while p holds. It must only
+            // have clocked edges into it, so with lo == 0 the entry, which may be
+            // reached by a link, checks the first tick itself.
             UASSERT_OBJ(!nodep->isStrong(), nodep, "Unbounded always must be weak (V3Width)");
-            SvaStateVertex* const livep = addDelayChain(entryVtxp, lo, flp);
-            livep->m_isUnbounded = true;
-            guardedEdge(livep, livep, flp);  // stay active every subsequent cycle
+            if (!isTopLevelStep) {
+                // Only a top-level step rejects, so an enclosing operator would never see it fail
+                nodep->v3warn(E_UNSUPPORTED,
+                              "Unsupported: unbounded 'always' in complex property expression");
+                return BuildResult::failWithError();
+            }
             SvaStateVertex* const sinkp = m_graph.createStateVertex();
             sinkp->m_isRejectSink = true;
-            SvaTransEdge* const rejEdgep
-                = guardedLink(livep, sinkp, sampled(propp->cloneTreePure(false)), flp);
-            if (isTopLevelStep) rejEdgep->m_rejectOnFail = true;
-            return {livep, nullptr, {}};
+            const auto addCheck = [&](SvaStateVertex* fromp) {
+                SvaTransEdge* const rejEdgep
+                    = guardedLink(fromp, sinkp, sampled(propp->cloneTreePure(false)), flp);
+                rejEdgep->m_rejectOnFail = true;
+            };
+            SvaStateVertex* const holdp = scopedCreateVertex();
+            if (lo == 0) {
+                addCheck(entryVtxp);
+                guardedEdge(entryVtxp, holdp, sampled(propp->cloneTreePure(false)), flp);
+            } else {
+                guardedEdge(addDelayChain(entryVtxp, lo - 1, flp), holdp, flp);
+            }
+            guardedEdge(holdp, holdp, sampled(propp->cloneTreePure(false)), flp);
+            addCheck(holdp);
+            holdp->m_isUnbounded = true;
+            return {holdp, nullptr, {}};
         }
         const unsigned hi = getConstUInt(nodep->hiBoundp());
         // Strong s_always[m:n]: mark every in-window registered vertex so an
@@ -2966,19 +2983,9 @@ class AssertNfaVisitor final : public VNVisitor {
         return VN_CAST(stmtp, PropSpec);
     }
 
-    void inlineNamedProperty(AstPropSpec* outerSpecp, AstFuncRef* funcrefp, AstProperty* propyp) {
-        // Recursion guard: IEEE 1800-2023 16.12.1 forbids recursive properties.
-        // V3Width emits "Recursive property call" for direct recursion before this
-        // pass runs; this catches any nested-inlining cycle that slips past.
-        if (!m_inliningProps.emplace(propyp).second) {
-            funcrefp->v3error("Illegal recursive property reference");  // LCOV_EXCL_LINE
-            return;  // LCOV_EXCL_LINE
-        }
-        struct Guard final {
-            std::set<const AstProperty*>& setr;
-            const AstProperty* keyp;
-            ~Guard() { setr.erase(keyp); }
-        } guard{m_inliningProps, propyp};
+    // Clone the body of a property instance with its actual arguments substituted
+    AstPropSpec* clonePropertyBody(AstFuncRef* funcrefp, AstProperty* propyp) {
+        // Its local variables are promoted (IEEE 1800-2023 16.12.1, 16.10).
         AstPropSpec* propSpecp = getPropertySpecp(propyp);
         UASSERT_OBJ(propSpecp, funcrefp, "Property has no body PropSpec");
         propSpecp
@@ -3016,6 +3023,23 @@ class AssertNfaVisitor final : public VNVisitor {
             pushDeletep(tconnect.second->exprp()->unlinkFrBack());
         }
         V3AssertCommon::checkSvaInstanceConstants(propSpecp, funcrefp);
+        return propSpecp;
+    }
+
+    void inlineNamedProperty(AstPropSpec* outerSpecp, AstFuncRef* funcrefp, AstProperty* propyp) {
+        // Recursion guard: IEEE 1800-2023 16.12.1 forbids recursive properties.
+        // V3Width emits "Recursive property call" for direct recursion before this
+        // pass runs; this catches any nested-inlining cycle that slips past.
+        if (!m_inliningProps.emplace(propyp).second) {
+            funcrefp->v3error("Illegal recursive property reference");  // LCOV_EXCL_LINE
+            return;  // LCOV_EXCL_LINE
+        }
+        struct Guard final {
+            std::set<const AstProperty*>& setr;
+            const AstProperty* keyp;
+            ~Guard() { setr.erase(keyp); }
+        } guard{m_inliningProps, propyp};
+        AstPropSpec* const propSpecp = clonePropertyBody(funcrefp, propyp);
 
         // Merge disable iff (IEEE 1800-2023 16.12.1)
         if (outerSpecp->disablep() && propSpecp->disablep()) {
@@ -3040,6 +3064,72 @@ class AssertNfaVisitor final : public VNVisitor {
 
         outerSpecp->replaceWith(propSpecp);
         VL_DO_DANGLING(pushDeletep(outerSpecp), outerSpecp);
+        V3AssertCommon::reducePlainAlways(propSpecp);
+    }
+
+    // True if an actual argument of funcrefp contains a property instance
+    static bool hasPropertyArg(const AstFuncRef* funcrefp) {
+        // Such an instance would be substituted for an untyped formal, which V3Width typed as a
+        // boolean.
+        return funcrefp->argsp() && funcrefp->argsp()->existsAndNext([](const AstFuncRef* refp) {
+            return VN_IS(refp->taskp(), Property);
+        });
+    }
+
+    // True if nodep is within an operand of a sequence operator or an implication antecedent
+    static bool isUnderSequenceOperator(const AstNode* nodep) {
+        for (const AstNode *belowp = nodep, *abovep = nodep->aboveLoopp(); VN_IS(abovep, NodeExpr);
+             belowp = abovep, abovep = abovep->aboveLoopp()) {
+            if (VN_IS(abovep, SExpr) || VN_IS(abovep, SConsRep) || VN_IS(abovep, SGotoRep)
+                || VN_IS(abovep, SNonConsRep) || VN_IS(abovep, SIntersect)
+                || VN_IS(abovep, SWithin) || VN_IS(abovep, SThroughout)) {
+                return true;
+            }
+            const AstImplication* const implp = VN_CAST(abovep, Implication);
+            if (implp && implp->lhsp() == belowp) return true;
+        }
+        return false;
+    }
+
+    // True if a property body is an 'always' of a property, only supported as a whole property
+    static bool isAlwaysOverPropertyOps(const AstPropSpec* specp) {
+        // As V3Width reports for the same property written out (IEEE 1800-2023 16.12.11)
+        const AstPropAlways* const alwaysp = VN_CAST(specp->propp(), PropAlways);
+        return alwaysp && alwaysp->propp()->exists([](const AstNode* np) {
+            const AstNodeExpr* const exprp = VN_CAST(np, NodeExpr);
+            return (exprp && exprp->isMultiCycleSva()) || VN_IS(np, Implication)
+                   || VN_IS(np, Until) || VN_IS(np, PropSpec);
+        });
+    }
+
+    // Substitute property instances used as property operator operands by their bodies
+    void inlineNestedPropertyRefs(AstNode* rootp) {
+        // So the NFA sees them (IEEE 1800-2023 16.12.1).
+        // A body with its own clock, disable iff or strength is not a plain operand, and a
+        // property instance is not a sequence operand (IEEE 1800-2023 A.2.10); they are left
+        // for later reporting. So is a body with a match item, as its local variables would only
+        // be lowered at the top level of the property.
+        std::vector<AstFuncRef*> funcrefps;
+        rootp->foreach([&](AstFuncRef* funcrefp) {
+            if (VN_IS(funcrefp->taskp(), Property) && !isUnderSequenceOperator(funcrefp)) {
+                funcrefps.push_back(funcrefp);
+            }
+        });
+        for (AstFuncRef* const funcrefp : funcrefps) {
+            AstProperty* const propyp = VN_AS(funcrefp->taskp(), Property);
+            const AstPropSpec* const bodySpecp = getPropertySpecp(propyp);
+            if (bodySpecp->sensesp() || bodySpecp->disablep()
+                || bodySpecp->propStrength() != VPropStrength::DEFAULT || hasPropertyArg(funcrefp)
+                || bodySpecp->exists([](const AstExprStmt*) { return true; })
+                || isAlwaysOverPropertyOps(bodySpecp))
+                continue;
+            AstPropSpec* const propSpecp = clonePropertyBody(funcrefp, propyp);
+            AstNode* const bodyp = propSpecp->propp()->unlinkFrBack();
+            VL_DO_DANGLING(pushDeletep(propSpecp), propSpecp);
+            funcrefp->replaceWith(bodyp);
+            VL_DO_DANGLING(pushDeletep(funcrefp), funcrefp);
+            inlineNestedPropertyRefs(bodyp);
+        }
     }
 
     void inlineSequenceRef(AstFuncRef* funcrefp, AstSequence* seqp) {
@@ -3501,14 +3591,15 @@ class AssertNfaVisitor final : public VNVisitor {
     // Inline property/sequence refs and reject unsupported shapes.
     // Returns the PropSpec to lower, or nullptr when fully handled here.
     AstPropSpec* prepareAssertionProp(AstNodeCoverOrAssert* assertp) {
-        if (AstPropSpec* const specp = VN_CAST(assertp->propp(), PropSpec)) {
-            if (AstFuncRef* const funcrefp = VN_CAST(specp->propp(), FuncRef)) {
-                if (AstProperty* const propyp = VN_CAST(funcrefp->taskp(), Property)) {
-                    inlineNamedProperty(specp, funcrefp, propyp);
-                }
-            }
+        // Repeat, as the inlined body may itself be only a property instance
+        while (true) {
+            AstPropSpec* const specp = VN_AS(assertp->propp(), PropSpec);
+            AstFuncRef* const funcrefp = VN_CAST(specp->propp(), FuncRef);
+            if (!funcrefp || !VN_IS(funcrefp->taskp(), Property)) break;
+            inlineNamedProperty(specp, funcrefp, VN_AS(funcrefp->taskp(), Property));
         }
 
+        inlineNestedPropertyRefs(assertp->propp());
         inlineAllSequenceRefs(assertp->propp());
 
         if (AstPropSpec* const specp = VN_CAST(assertp->propp(), PropSpec)) {
@@ -3552,6 +3643,22 @@ class AssertNfaVisitor final : public VNVisitor {
         while (AstLogNot* const notp = VN_CAST(seqBodyp, LogNot)) {
             negated = !negated;
             seqBodyp = notp->lhsp();
+        }
+
+        // A negated unbounded always passes when its operand fails, which the NFA cannot
+        // express as it has no pending state for the always
+        const AstNode* negAlwaysp = nullptr;
+        propp->exists([&](const AstLogNot* notp) {
+            return notp->exists([&](const AstPropAlways* alwaysp) {
+                if (VN_IS(alwaysp->hiBoundp(), Unbounded)) negAlwaysp = alwaysp;
+                return negAlwaysp != nullptr;
+            });
+        });
+        if (negAlwaysp) {
+            negAlwaysp->v3warn(E_UNSUPPORTED,
+                               "Unsupported: unbounded 'always' in a negated property");
+            replaceBodyOnBuildError(assertp->fileline(), propp, /*errorEmitted=*/true);
+            return;
         }
 
         const char* const propertyControlp

@@ -292,6 +292,7 @@ class WidthVisitor final : public VNVisitor {
     bool m_underMemberSel = false;  // Viting under a MemberSel
     AstNodeExpr* m_fromParentp = nullptr;  // Method call or member select iterating its fromp()
     AstNode* m_seqUnsupp = nullptr;  // Property has unsupported node
+    const AstNode* m_emptyRepOkp = nullptr;  // Repetition reduced as an empty operand of SExpr
     bool m_hasSExpr = false;  // Property has a sequence expression
     const AstCell* m_cellp = nullptr;  // Current cell for arrayed instantiations
     std::vector<AstVar*> m_splitIfaceArrayVarps;  // Interface arrays split by V3Param
@@ -1741,7 +1742,7 @@ class WidthVisitor final : public VNVisitor {
             userIterateAndNext(nodep->countp(), WidthVP{SELF, BOTH}.p());
             userIterateAndNext(nodep->maxCountp(), WidthVP{SELF, BOTH}.p());
             if (!svaCountsRefFormal(nodep->countp(), nodep->maxCountp())) {
-                V3AssertCommon::checkSvaRepetition(nodep, nodep);
+                V3AssertCommon::checkSvaRepetition(nodep, nodep, nodep == m_emptyRepOkp);
             }
             nodep->dtypeSetBit();
         }
@@ -1790,10 +1791,12 @@ class WidthVisitor final : public VNVisitor {
                     }
                 });
             }
-            if (hasPropertyOp) {
+            // The whole property is reduced to its operand, see visit(AstPropSpec*)
+            const bool wholeAlways = VN_IS(nodep->backp(), PropSpec) && nodep->isPlainAlways();
+            if (hasPropertyOp && !wholeAlways) {
                 nodep->v3warn(E_UNSUPPORTED,
-                              "Unsupported: property/sequence operator inside bounded"
-                              " always (IEEE 1800-2023 16.12.11)");
+                              "Unsupported: property/sequence operator inside always"
+                              " (IEEE 1800-2023 16.12.11)");
             }
             VL_DO_DANGLING(fixWidthReduce(propp), propp);
             nodep->dtypeSetBit();
@@ -1952,7 +1955,10 @@ class WidthVisitor final : public VNVisitor {
         if (m_vup->prelim()) {
             iterateCheckBool(nodep, "exprp", nodep->exprp(), BOTH);
             userIterateAndNext(nodep->countp(), WidthVP{SELF, BOTH}.p());
-            userIterateAndNext(nodep->maxCountp(), WidthVP{SELF, BOTH}.p());
+            // A '$' maximum is legal, but is not an expression to width
+            if (!VN_IS(nodep->maxCountp(), Unbounded)) {
+                userIterateAndNext(nodep->maxCountp(), WidthVP{SELF, BOTH}.p());
+            }
             if (!svaCountsRefFormal(nodep->countp(), nodep->maxCountp())) {
                 V3AssertCommon::checkSvaRepetition(nodep, nodep);
             }
@@ -1964,7 +1970,10 @@ class WidthVisitor final : public VNVisitor {
         if (m_vup->prelim()) {
             iterateCheckBool(nodep, "exprp", nodep->exprp(), BOTH);
             userIterateAndNext(nodep->countp(), WidthVP{SELF, BOTH}.p());
-            userIterateAndNext(nodep->maxCountp(), WidthVP{SELF, BOTH}.p());
+            // A '$' maximum is legal, but is not an expression to width
+            if (!VN_IS(nodep->maxCountp(), Unbounded)) {
+                userIterateAndNext(nodep->maxCountp(), WidthVP{SELF, BOTH}.p());
+            }
             if (!svaCountsRefFormal(nodep->countp(), nodep->maxCountp())) {
                 V3AssertCommon::checkSvaRepetition(nodep, nodep);
             }
@@ -1997,13 +2006,55 @@ class WidthVisitor final : public VNVisitor {
         m_hasSExpr = true;
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
-            if (nodep->preExprp()) {
-                iterateCheckBool(nodep, "preExprp", nodep->preExprp(), BOTH);
-            }
             iterate(nodep->delayp());
-            iterateCheckBool(nodep, "exprp", nodep->exprp(), BOTH);
+            {
+                // An empty operand is reduced below, the preExprp if both are empty
+                VL_RESTORER(m_emptyRepOkp);
+                const bool reducible = emptyReducibleCycles(nodep);
+                if (nodep->preExprp()) {
+                    m_emptyRepOkp = reducible ? nodep->preExprp() : nullptr;
+                    iterateCheckBool(nodep, "preExprp", nodep->preExprp(), BOTH);
+                }
+                m_emptyRepOkp
+                    = reducible && !isEmptyRep(nodep->preExprp()) ? nodep->exprp() : nullptr;
+                iterateCheckBool(nodep, "exprp", nodep->exprp(), BOTH);
+            }
             nodep->dtypeSetBit();
+            reduceEmptyRep(nodep);
         }
+    }
+    // Cycles of a constant cycle delay that an empty operand can reduce, else 0
+    static uint32_t emptyReducibleCycles(const AstSExpr* nodep) {
+        const AstDelay* const delayp = VN_AS(nodep->delayp(), Delay);
+        const AstConst* const constp = VN_CAST(delayp->lhsp(), Const);
+        return delayp->isRangeDelay() || !constp ? 0 : constp->toUInt();
+    }
+    // True if a consecutive repetition only matches empty, '[*0]' or '[*0:0]'
+    static bool isEmptyRep(const AstNode* nodep) {
+        const AstSConsRep* const repp = VN_CAST(nodep, SConsRep);
+        if (!repp || repp->unbounded()) return false;
+        const AstConst* const minp = VN_CAST(repp->countp(), Const);
+        const AstConst* const maxp = repp->maxCountp() ? VN_CAST(repp->maxCountp(), Const) : minp;
+        return minp && maxp && minp->num().isEqZero() && maxp->num().isEqZero();
+    }
+    // Remove an empty operand of a constant cycle delay
+    void reduceEmptyRep(AstSExpr* nodep) {
+        // `empty ##n s` is `##(n-1) s`, and `s ##n empty` is `s ##(n-1) 1`, for n > 0
+        // (IEEE 1800-2023 16.9.2.1). An absent preExprp is `1`, as in `##n s`.
+        const uint32_t cycles = emptyReducibleCycles(nodep);
+        if (!cycles) return;
+        if (isEmptyRep(nodep->preExprp())) {
+            pushDeletep(nodep->preExprp()->unlinkFrBack());
+        } else if (isEmptyRep(nodep->exprp())) {
+            AstNodeExpr* const emptyp = nodep->exprp();
+            emptyp->replaceWith(new AstConst{emptyp->fileline(), AstConst::BitTrue{}});
+            VL_DO_DANGLING(pushDeletep(emptyp), emptyp);
+        } else {
+            return;
+        }
+        AstNodeExpr* const cyclesp = VN_AS(nodep->delayp(), Delay)->lhsp();
+        cyclesp->replaceWith(new AstConst{cyclesp->fileline(), cycles - 1});
+        VL_DO_DANGLING(pushDeletep(cyclesp), cyclesp);
     }
     void visit(AstSClocked* nodep) override {
         VL_RESTORER(m_underSExpr);
@@ -6814,6 +6865,10 @@ class WidthVisitor final : public VNVisitor {
                 VL_DO_DANGLING(pushDeletep(untilp), untilp);
             }
             iterateCheckBool(nodep, "Property", nodep->propp(), BOTH);
+            // A whole property 'always p' is reduced to p, once its bounds are constant. The
+            // whole property of a property declaration is reduced only where it is instanced as
+            // a whole property.
+            if (!VN_IS(m_ftaskp, Property)) V3AssertCommon::reducePlainAlways(nodep);
             userIterateAndNext(nodep->sensesp(), nullptr);
             if (nodep->disablep()) {
                 iterateCheckBool(nodep, "Disable", nodep->disablep(),
