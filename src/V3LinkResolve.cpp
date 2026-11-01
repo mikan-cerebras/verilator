@@ -96,7 +96,25 @@ class LinkResolveVisitor final : public VNVisitor {
     }
     void visit(AstVar* nodep) override {
         iterateChildren(nodep);
-        if (m_ftaskp) nodep->funcLocal(true);
+        if (m_ftaskp) {
+            nodep->funcLocal(true);
+            // A local's data type requires constant expressions, so a call there means the
+            // function may not be a constant function (IEEE 1800-2023 13.4.3)
+            if (!nodep->isIO() && nodep->childDTypep()
+                && nodep->childDTypep()->exists([](const AstNodeFTaskRef*) { return true; })) {
+                m_ftaskp->usesConstFunc(true);
+            }
+        }
+        if (!m_ftaskp && nodep->isInout() && nodep->varType() == VVarType::VAR) {
+            nodep->v3warn(NONSTD, "Inout port " << nodep->prettyNameQ()
+                                                << " is declared as a variable, but should be a"
+                                                   " net (IEEE 1800-2023 23.3.3.2)");
+        }
+        if (nodep->isRef() && nodep->isNet()) {
+            nodep->v3error("Ref port " << nodep->prettyNameQ()
+                                       << " is declared as a net, but must be a variable"
+                                          " (IEEE 1800-2023 23.2.2.2)");
+        }
         if (nodep->isSigModPublic()) {
             nodep->sigModPublic(false);  // We're done with this attribute
             m_modp->modPublic(true);  // Avoid flattening if signals are exposed

@@ -1626,6 +1626,16 @@ List Of Warnings
    ``$psprintf`` system function is replaced by its standard equivalent
    ``$sformatf``.
 
+   Also warns on an inout port declared as a variable, such as ``inout var
+   logic y``, and on a variable connected to an inout port of an instance,
+   which IEEE 1800-2023 23.3.3.2 does not allow. Verilator simulates them as
+   if they were nets. Instead declare or connect a net, such as a ``wire``.
+
+   Also warns on an initializer on an output port that is a net,
+   such as ``output wire y = 1'b1``, which IEEE 1800-2023 23.2.2.2 does not
+   allow. Verilator uses it as the initial value of the net. Instead use a
+   continuous assignment, or declare the port as a variable.
+
    Ignoring this warning will only suppress the lint check; it will
    simulate correctly.
 
