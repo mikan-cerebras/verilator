@@ -3463,7 +3463,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
         if (classExtendsp->argsp()) argsp = classExtendsp->argsp()->cloneTree(true);
         AstNew* const newExprp = new AstNew{fl, argsp};
         newExprp->isImplicit(true);
-        AstDot* const superNewp = new AstDot{fl, false, new AstParseRef{fl, "super"}, newExprp};
+        AstDot* const superNewp = new AstDot{fl, false, AstParseRef::newSuper(fl), newExprp};
         AstNodeStmt* const superNewStmtp = superNewp->makeStmt();
         for (AstNode* const stmtp : nodep->stmtspList()) {
             // super.new shall be the first statement (IEEE 1800-2023 8.15)
@@ -4254,7 +4254,18 @@ class LinkDotResolveVisitor final : public VNVisitor {
     }
 
     static bool isDotThisReference(const AstDot* nodep) {
-        return VN_IS(nodep->lhsp(), ParseRef) && nodep->lhsp()->name() == "this";
+        const AstParseRef* const refp = VN_CAST(nodep->lhsp(), ParseRef);
+        return refp && refp->isThis();
+    }
+    static bool isDotSuperReference(const AstDot* nodep) {
+        const AstParseRef* const refp = VN_CAST(nodep->lhsp(), ParseRef);
+        return refp && refp->isSuper();
+    }
+    // Is the dot 'local::this.x' or 'local::super.x' (IEEE 1800-2023 18.7.1)
+    static bool isDotLocalThisReference(const AstDot* nodep) {
+        const AstDot* const localp = VN_CAST(nodep->lhsp(), Dot);
+        const AstParseRef* const refp = localp ? VN_CAST(localp->rhsp(), ParseRef) : nullptr;
+        return refp && localp->lhsp()->name() == "local::" && (refp->isThis() || refp->isSuper());
     }
 
     void visit(AstDot* nodep) override {
@@ -4281,6 +4292,14 @@ class LinkDotResolveVisitor final : public VNVisitor {
             m_ds.m_dotp = nodep;  // Always, not just at start
             m_ds.m_dotPos = DP_FIRST;
 
+            if (isDotLocalThisReference(nodep)) {
+                // Resolve as 'this.'/'super.' of the scope calling 'randomize() with'
+                AstDot* const localp = VN_AS(nodep->lhsp(), Dot);
+                iterate(localp->lhsp());  // Checks that 'local::' is legal here
+                m_randSymp = nullptr;
+                localp->replaceWith(localp->rhsp()->unlinkFrBack());
+                VL_DO_DANGLING(pushDeletep(localp), localp);
+            }
             if (isDotThisReference(nodep)) {
                 VSymEnt* classSymp = getThisClassSymp();
                 // In 'randomize() with { this.member }', 'this' refers to randomized
@@ -4295,7 +4314,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
                     m_ds.m_dotSymp = classSymp;
                     UINFO(8, indent() << "this. " << m_ds.ascii());
                 }
-            } else if (VN_IS(nodep->lhsp(), ParseRef) && nodep->lhsp()->name() == "super") {
+            } else if (isDotSuperReference(nodep)) {
                 const VSymEnt* classSymp = getThisClassSymp();
                 if (!classSymp) {
                     nodep->v3error("'super' used outside class (IEEE 1800-2023 8.15)");
@@ -4504,11 +4523,16 @@ class LinkDotResolveVisitor final : public VNVisitor {
             m_ds.init(m_curSymp);
             // Note m_ds.m_dotp remains nullptr; this is a reference not under a dot
         }
-        if (nodep->name() == "super") {
+        if (nodep->isSuper()) {
             nodep->v3warn(E_UNSUPPORTED, "Unsupported: super");
             m_ds.m_dotErr = true;
         }
-        if (nodep->name() == "this") {
+        if (nodep->isThis()) {
+            if (m_ds.m_dotPos == DP_PACKAGE) {  // 'local::this' is not followed by a member
+                nodep->v3warn(E_UNSUPPORTED, "Unsupported: 'local::this' without member select");
+                m_ds.m_dotErr = true;
+                return;
+            }
             iterateChildren(nodep);
             if (m_statep->forPrimary()) return;  // The class might be parameterized somewhere
             const VSymEnt* classSymp = getThisClassSymp();
@@ -6769,7 +6793,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
             // in this case it was already linked, so it doesn't have a super reference
             m_explicitSuperNewp = newExprp;
         } else if (const AstDot* const dotp = VN_CAST(nodep->exprp(), Dot)) {
-            if (dotp->lhsp()->name() == "super") {
+            if (isDotSuperReference(dotp)) {
                 if (AstNew* const newExprp = VN_CAST(dotp->rhsp(), New)) {
                     m_explicitSuperNewp = newExprp;
                 }
