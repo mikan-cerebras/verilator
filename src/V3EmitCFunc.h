@@ -532,23 +532,13 @@ public:
     void visit(AstCvtArrayToPacked* nodep) override {
         AstNodeDType* const fromDtp = nodep->fromp()->dtypep()->skipRefp();
         AstNodeDType* const elemDtp = fromDtp->subDTypep()->skipRefp();
-        const bool descending = [&]() {
-            if (const AstUnpackArrayDType* const unpackDtp = VN_CAST(fromDtp, UnpackArrayDType))
-                return !unpackDtp->declRange().ascending();
-            return false;
-        }();
         puts("VL_PACK_");
         emitIQW(nodep);
         puts("_");
         emitRU(fromDtp);
         emitIQW(elemDtp);
-        if (descending) {
-            // Wrap source in VL_PACK_REVERSED so VL_PACK sees ascending order
-            emitOpName(nodep, "(%nw, %rw, %P, VL_PACK_REVERSED(%li))", nodep->fromp(), elemDtp,
-                       nullptr);
-        } else {
-            emitOpName(nodep, "(%nw, %rw, %P, %li)", nodep->fromp(), elemDtp, nullptr);
-        }
+        emitOpName(nodep, "(%nw, %rw, %P, " + EmitCUtil::unpackReverseCall(fromDtp) + "(%li))",
+                   nodep->fromp(), elemDtp, nullptr);
     }
 
     void visit(AstCvtUnpackToQueue* nodep) override {
@@ -639,7 +629,7 @@ public:
         bool paren = true;
         bool decind = false;
         bool rhs = true;
-        bool reverseUnpack = false;  // Set for descending CvtPackedToArray
+        std::string reverseUnpackCall;  // Set for CvtPackedToArray with descending dimensions
         const AstUnpackArrayDType* const unpackDtp
             = VN_CAST(nodep->dtypep()->skipRefp(), UnpackArrayDType);
         if (AstSel* const selp = VN_CAST(nodep->lhsp(), Sel)) {
@@ -710,8 +700,7 @@ public:
             puts(", ");
             rhs = false;
             iterateAndNextConstNull(castp->fromp());
-            // Descending unpacked dest: reverse after unpack
-            if (unpackDtp && !unpackDtp->declRange().ascending()) reverseUnpack = true;
+            reverseUnpackCall = EmitCUtil::unpackReverseCall(castp->dtypep());
         } else if (const AstCvtArrayToArray* const castp
                    = VN_CAST(nodep->rhsp(), CvtArrayToArray)) {
             if (castp->reverse()) {
@@ -772,8 +761,9 @@ public:
         if (paren) puts(")");
         if (decind) ofp()->blockDec();
         puts(";\n");
-        if (reverseUnpack) {
-            puts("VL_UNPACK_REVERSED(");
+        if (!reverseUnpackCall.empty()) {
+            iterateAndNextConstNull(nodep->lhsp());
+            puts(" = " + reverseUnpackCall + "(");
             iterateAndNextConstNull(nodep->lhsp());
             puts(");\n");
         }
@@ -1601,6 +1591,14 @@ public:
         } else {
             emitOpName(nodep, nodep->emitC(), nodep->lhsp(), nullptr, nullptr);
         }
+    }
+    void visit(AstToStringN* nodep) override {
+        const std::string call = EmitCUtil::toStringCall(nodep->lhsp()->dtypep(), "%li");
+        if (call.empty()) {
+            visit(static_cast<AstNodeUniop*>(nodep));
+            return;
+        }
+        emitOpName(nodep, call, nodep->lhsp(), nullptr, nullptr);
     }
     void visit(AstNodeBiop* nodep) override {
         if (nodep->emitCheckMaxWords() && nodep->widthWords() > VL_MULS_MAX_WORDS) {
