@@ -344,6 +344,14 @@ public:
             if (!symp->exported()) symp->exported(true);
         }
     }
+    // True if a variable is an interface reference or an array of them
+    static bool isIfaceRefVar(const AstVar* varp) {
+        const AstNodeDType* dtypep = varp->subDTypep();
+        while (VN_IS(dtypep, BracketArrayDType) || VN_IS(dtypep, UnpackArrayDType)) {
+            dtypep = dtypep->subDTypep();
+        }
+        return VN_IS(dtypep, IfaceRefDType);
+    }
     void importFromIface(VSymGraph* graphp, const VSymEnt* srcp, bool onlyUnmodportable = false) {
         // Import interface tokens from source symbol table into this symbol table, recursively
         UINFO(9, "     importIf  se" << cvtToHex(this) << " from se" << cvtToHex(srcp));
@@ -355,7 +363,10 @@ public:
             if (!onlyUnmodportable || (varp && varp->isParam())) {
                 VSymEnt* const subSymp = new VSymEnt{graphp, subSrcp};
                 reinsert(name, subSymp);
-                // And recurse to create children
+                // And recurse to create children. Not into an interface reference variable,
+                // which gets its own import: it may be of the interface being imported, which
+                // would recurse forever, and copying its imported symbols is exponential.
+                if (varp && isIfaceRefVar(varp)) continue;
                 subSymp->importFromIface(graphp, subSrcp);
             }
         }
