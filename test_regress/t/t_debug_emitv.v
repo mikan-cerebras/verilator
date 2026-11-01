@@ -169,6 +169,7 @@ module t (/*AUTOARG*/
 
   sub sub(.*);
   seq_event seq_event(.*);
+  defparam_gen dpg();
 
   initial begin
     int other;
@@ -526,6 +527,21 @@ module sub(input logic clk);
     return {31'd0, v[2]} + 32'd1;
   endfunction
   real r;
+endmodule
+
+module defparam_gen;
+  // verilator lint_off DEFPARAM
+  // A defparam path starting with a generate block, that without it names 'dpg.n'
+  defparam_leaf n();
+  if (1) begin : dpg
+    defparam_leaf n();
+  end
+  defparam dpg.n.P = 2;
+  // verilator lint_on DEFPARAM
+endmodule
+
+module defparam_leaf;
+  parameter P = 1;
 endmodule
 
 module seq_event(input logic clk);
