@@ -133,6 +133,7 @@ public:
 class WidthCommitVisitor final : public VNVisitor {
     // NODE STATE
     //  AstVar::user1p           -> bool.  Processed
+    //  AstVar::user2()          -> bool.  Port of an automatic subroutine
     //  AstNodeFTask::user2()    -> uint64_t. Non-zero if ever referenced (called)
     //  AstNew::user2()          -> uint64_t. Count of number of references, minus references in
     //  functions never called
@@ -279,8 +280,9 @@ private:
         if (!m_underSel && m_contNbap) {
             std::string varType;
             const AstNodeDType* const varDtp = varp->dtypep()->skipRefp();
+            // V3LinkParse may also make ports of static subroutines automatic, so check user2
             if (varp->lifetime().isAutomatic() && !VN_IS(varDtp, IfaceRefDType)
-                && !(varp->isFuncLocal() && varp->isIO()))
+                && (!varp->isIO() || varp->user2()))
                 varType = "Automatic lifetime";
             else if (varp->isClassMember() && !varp->lifetime().isStatic()
                      && !VN_IS(varDtp, IfaceRefDType))
@@ -748,6 +750,8 @@ private:
     void visit(AstVar* nodep) override {
         iterateChildren(nodep);
         editDType(nodep);
+        // Visited before references from within the subroutine, the only legal ones
+        if (nodep->isIO() && m_ftaskp && m_ftaskp->lifetime().isAutomatic()) nodep->user2(true);
         if (nodep->isFuncLocal() && nodep->direction() == VDirection::INPUT && nodep->valuep()) {
             // It's the default value of optional argument.
             // Such values are added to function calls in V3Width so can be removed now
