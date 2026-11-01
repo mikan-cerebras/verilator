@@ -34,6 +34,9 @@ EmitCParentModule::EmitCParentModule() {
                 && EmitCBaseVisitorConst::isExplicitlyConstructed(varp)) {
                 varp->user3(modp->user3Inc());
             }
+            if (varp && EmitCBaseVisitorConst::isNameableTrivial(varp)) {
+                varp->user3(modp->user4Inc());
+            }
         }
         modp->foreach([&](AstNodeCoverDecl* nodep) { nodep->user4p(modp); });
     };
