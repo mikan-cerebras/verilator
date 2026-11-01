@@ -362,6 +362,20 @@ private:
         funcrefp->replaceWith(clonedp);
         VL_DO_DANGLING(pushDeletep(funcrefp), funcrefp);
     }
+    // Run the subroutine call match items of a sequence only when it matches
+    static void guardMatchItemCalls(AstExprStmt* nodep) {
+        // The calls run at each match of the sequence (IEEE 1800-2023 16.11). A sequence lowered
+        // here is a single-cycle expression, evaluated once per attempt, so it matches when the
+        // result is true. Any other match item is an assignment, as V3LinkInc lowers increments.
+        for (AstNode *stmtp = nodep->stmtsp(), *nextp; stmtp; stmtp = nextp) {
+            nextp = stmtp->nextp();
+            if (VN_IS(stmtp, Assign)) continue;
+            VNRelinker relinker;
+            stmtp->unlinkFrBack(&relinker);
+            relinker.relink(
+                new AstIf{stmtp->fileline(), nodep->resultp()->cloneTreePure(false), stmtp});
+        }
+    }
     AstPropSpec* clonePropertyBody(AstFuncRef* funcrefp, AstProperty* propp) {
         // Clone, as the property may be instanced multiple times with different arguments, in
         // different modules, or through different hierarchical paths. Substitute an inner
@@ -1430,6 +1444,10 @@ private:
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
     }
 
+    void visit(AstExprStmt* nodep) override {
+        iterateChildren(nodep);
+        if (nodep->matchItems()) guardMatchItemCalls(nodep);
+    }
     void visit(AstFuncRef* nodep) override {
         // IEEE 1800-2023 16.8: Inline sequence instances wherever they appear
         // in the expression tree (inside implications, boolean ops, nested refs, etc.)
@@ -1516,8 +1534,13 @@ private:
                         matchAssignsp = AstNode::addNextNull(matchAssignsp, assignp);
                     }
                 }
-                VL_DO_DANGLING(pushDeletep(lhsp), lhsp);
-                lhsp = antExprp;
+                if (exprStmtp->stmtsp()) {
+                    // Keep the guarded subroutine calls, evaluated with the antecedent
+                    exprStmtp->resultp(antExprp);
+                } else {
+                    VL_DO_DANGLING(pushDeletep(lhsp), lhsp);
+                    lhsp = antExprp;
+                }
 
                 if (matchAssignsp) {
                     AstAlways* const alwaysp

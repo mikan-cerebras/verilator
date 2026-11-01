@@ -1464,7 +1464,7 @@ class AstExprStmt final : public AstNodeExpr {
     // @astgen op1 := stmtsp : List[AstNode]
     // @astgen op2 := resultp : AstNodeExpr
 private:
-    bool m_hasResult = true;  // Returns result via resultp()
+    bool m_matchItems = false;  // Statements are sequence match items
 
 public:
     AstExprStmt(FileLine* fl, AstNode* stmtsp, AstNodeExpr* resultp)
@@ -1485,8 +1485,8 @@ public:
         return resultp()->isPure();
     }
     bool sameNode(const AstNode*) const override { return true; }
-    bool hasResult() const { return m_hasResult; }
-    void hasResult(bool flag) { m_hasResult = flag; }
+    bool matchItems() const { return m_matchItems; }
+    void matchItems(bool flag) { m_matchItems = flag; }
 };
 class AstFError final : public AstNodeExpr {
     // @astgen op1 := filep : AstNodeExpr
@@ -1609,17 +1609,21 @@ public:
 class AstFScanF final : public AstNodeExpr {
     // @astgen op1 := exprsp : List[AstNodeExpr] // VarRefs for results
     // @astgen op2 := filep : Optional[AstNodeExpr] // file (must be a VarRef)
+    // @astgen op3 := formatp : Optional[AstNodeExpr] // Format, until a literal moves to m_text
     string m_text;
+    VTimescale m_timeunit;  // Parent module time unit
 
 public:
-    AstFScanF(FileLine* fl, const string& text, AstNodeExpr* filep, AstNodeExpr* exprsp)
-        : ASTGEN_SUPER_FScanF(fl)
-        , m_text{text} {
+    AstFScanF(FileLine* fl, AstNodeExpr* formatp, AstNodeExpr* filep, AstNodeExpr* exprsp)
+        : ASTGEN_SUPER_FScanF(fl) {
         addExprsp(exprsp);
         this->filep(filep);
+        this->formatp(formatp);
         dtypeSetInteger2State();  // Spec says integer return
     }
     ASTGEN_MEMBERS_AstFScanF;
+    void dump(std::ostream& str) const override;
+    void dumpJson(std::ostream& str) const override;
     string name() const override VL_MT_STABLE { return m_text; }
     string verilogKwd() const override { return "$fscanf"; }
     string emitVerilog() override { V3ERROR_NA_RETURN(""); }
@@ -1630,10 +1634,13 @@ public:
     bool isOutputter() override { return true; }  // SPECIAL: makes output
     bool cleanOut() const override { return false; }
     bool sameNode(const AstNode* samep) const override {
-        return text() == VN_DBG_AS(samep, FScanF)->text();
+        const AstFScanF* const asamep = VN_DBG_AS(samep, FScanF);
+        return text() == asamep->text() && timeunit() == asamep->timeunit();
     }
     string text() const { return m_text; }  // * = Text to display
     void text(const string& text) { m_text = text; }
+    VTimescale timeunit() const { return m_timeunit; }
+    void timeunit(const VTimescale& flag) { m_timeunit = flag; }
     bool isSystemFunc() const override { return true; }
 };
 class AstFSeek final : public AstNodeExpr {
@@ -2571,15 +2578,16 @@ public:
 class AstSScanF final : public AstNodeExpr {
     // @astgen op1 := exprsp : List[AstNodeExpr] // VarRefs for results
     // @astgen op2 := fromp : AstNodeExpr
+    // @astgen op3 := formatp : Optional[AstNodeExpr] // Format, until a literal moves to m_text
     string m_text;
     VTimescale m_timeunit;  // Parent module time unit
 
 public:
-    AstSScanF(FileLine* fl, const string& text, AstNodeExpr* fromp, AstNodeExpr* exprsp)
-        : ASTGEN_SUPER_SScanF(fl)
-        , m_text{text} {
+    AstSScanF(FileLine* fl, AstNodeExpr* formatp, AstNodeExpr* fromp, AstNodeExpr* exprsp)
+        : ASTGEN_SUPER_SScanF(fl) {
         addExprsp(exprsp);
         this->fromp(fromp);
+        this->formatp(formatp);
         dtypeSetInteger2State();  // Spec says integer return
     }
     ASTGEN_MEMBERS_AstSScanF;
@@ -2597,6 +2605,7 @@ public:
         return text() == asamep->text() && timeunit() == asamep->timeunit();
     }
     string text() const { return m_text; }  // * = Text to display
+    void text(const string& text) { m_text = text; }
     VTimescale timeunit() const { return m_timeunit; }
     void timeunit(const VTimescale& flag) { m_timeunit = flag; }
     bool isSystemFunc() const override { return true; }
