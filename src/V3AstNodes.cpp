@@ -2843,6 +2843,12 @@ bool AstNodeDType::isDpiLogicVec() const {
            && !(basicp->keyword() == VBasicDTypeKwd::LOGIC && !basicp->isRanged());
 }
 bool AstNodeDType::isFourstate() const { return basicp() && basicp()->isFourstate(); }
+bool AstNodeDType::isFourstateElement() const {
+    // Unlike isFourstate(), which is false for queues, dynamic and associative arrays
+    const AstNodeDType* dtypep = skipRefp();
+    while (dtypep->isNonPackedArray()) dtypep = dtypep->subDTypep()->skipRefp();
+    return dtypep->isFourstate();
+}
 bool AstNodeDType::isLiteralType() const VL_MT_STABLE {
     if (const auto* const dtypep = VN_CAST(skipRefp(), BasicDType)) {
         return dtypep->keyword().isLiteralType();
@@ -4259,7 +4265,7 @@ AstBasicDType* AstTypeTable::findLogicBitDType(FileLine* fl, VBasicDTypeKwd kwd,
 }
 AstQueueDType* AstTypeTable::findQueueIndexDType(FileLine* fl) {
     if (VL_UNLIKELY(!m_queueIndexp)) {
-        AstQueueDType* const newp = new AstQueueDType{fl, AstNode::findUInt32DType(), nullptr};
+        AstQueueDType* const newp = new AstQueueDType{fl, AstNode::findIntDType(), nullptr};
         addTypesp(newp);
         m_queueIndexp = newp;
     }
