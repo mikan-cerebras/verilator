@@ -1039,9 +1039,20 @@ class ConstVisitor final : public VNVisitor {
                     selp = valuep->cloneTree(false);
                 } else if (const AstSliceSel* const slicep = VN_CAST(fromp, SliceSel)) {
                     // Select from the sliced array, as a slice is a copy that cannot be written
-                    const int offset = slicep->declRange().lo() + idx - range.lo();
-                    selp = new AstArraySel{fromp->fileline(),
-                                           slicep->fromp()->cloneTreePure(false), offset};
+                    FileLine* const fl = fromp->fileline();
+                    AstNodeExpr* const arrayp = slicep->fromp()->cloneTreePure(false);
+                    const int offset = idx - range.lo();
+                    if (const AstConst* const lsbConstp = VN_CAST(slicep->lsbp(), Const)) {
+                        selp = new AstArraySel{fl, arrayp, lsbConstp->toSInt() + offset};
+                    } else {  // Variable position
+                        AstNodeExpr* const lsbp = slicep->lsbp()->cloneTreePure(false);
+                        AstNodeExpr* const indexp
+                            = new AstAdd{fl, lsbp,
+                                         new AstConst{fl, AstConst::WidthedValue{}, lsbp->width(),
+                                                      static_cast<uint32_t>(offset)}};
+                        indexp->dtypeFrom(lsbp);
+                        selp = new AstArraySel{fl, arrayp, indexp};
+                    }
                 } else {
                     selp = new AstArraySel{fromp->fileline(), fromp->cloneTreePure(false),
                                            idx - range.lo()};
