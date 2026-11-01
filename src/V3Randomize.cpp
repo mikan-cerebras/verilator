@@ -3278,9 +3278,78 @@ class ConstraintExprVisitor final : public VNVisitor {
         // Hoisted runtime-conditional disable_soft statements parked in the
         // constraint-items list by the pre-pass; already fully lowered.
     }
+    // Move soft items of a constraint 'if' out to guarded soft constraints after 'lastp'
+    void hoistGuardedSofts(AstNode*& lastp, AstConstraintIf* ifp, AstNodeExpr* outerCondp) {
+        // The 'if' folds into one hard expression, so each soft item needs its own
+        // 'if (guard) soft item' (IEEE 1800-2023 18.5.14). Order is kept, as later soft
+        // constraints have priority.
+        if (!ifp->exists([](const AstConstraintExpr* const exprp) { return exprp->isSoft(); })) {
+            return;
+        }
+        hoistGuardedSoftItems(lastp, ifp->thensp(),
+                              newGuardAnd(outerCondp, ifp->condp()->cloneTreePure(false)));
+        if (ifp->elsesp()) {
+            hoistGuardedSoftItems(lastp, ifp->elsesp(), newGuardAnd(outerCondp, newNotCond(ifp)));
+        }
+    }
+    // Move soft items of a constraint 'if' branch out to guarded soft constraints
+    void hoistGuardedSoftItems(AstNode*& lastp, AstNode* itemsp, AstNodeExpr* condp) {
+        for (AstNode *itemp = itemsp, *nextp; itemp; itemp = nextp) {
+            nextp = itemp->nextp();
+            if (AstConstraintIf* const ifp = VN_CAST(itemp, ConstraintIf)) {
+                hoistGuardedSofts(lastp, ifp, condp);
+                continue;
+            }
+            const AstConstraintExpr* const exprp = VN_CAST(itemp, ConstraintExpr);
+            AstConstraintForeach* const foreachp = VN_CAST(itemp, ConstraintForeach);
+            if (!(exprp && exprp->isSoft())
+                && !(foreachp && foreachp->exists([](const AstConstraintExpr* const softp) {
+                       return softp->isSoft();
+                   }))) {
+                continue;
+            }
+            FileLine* const fl = itemp->fileline();
+            itemp->replaceWith(new AstConstraintExpr{fl, new AstConst{fl, AstConst::BitTrue{}}});
+            AstNode* hoistp;
+            if (foreachp) {
+                // 'if (c) foreach (...) body' is 'foreach (...) if (c) body'
+                foreachp->addBodyp(new AstConstraintIf{fl, condp->cloneTreePure(false),
+                                                       foreachp->bodyp()->unlinkFrBackWithNext(),
+                                                       nullptr});
+                hoistp = foreachp;
+            } else {
+                hoistp = new AstConstraintIf{fl, condp->cloneTreePure(false), itemp, nullptr};
+            }
+            lastp->addNextHere(hoistp);
+            lastp = hoistp;
+        }
+        VL_DO_DANGLING(condp->deleteTree(), condp);
+    }
+    // Negated condition of a constraint 'if'
+    static AstNodeExpr* newNotCond(const AstConstraintIf* ifp) {
+        AstNodeExpr* const notp
+            = new AstLogNot{ifp->fileline(), ifp->condp()->cloneTreePure(false)};
+        notp->user1(ifp->condp()->user1());
+        return notp;
+    }
+    // Condition 'outerCondp && condp', taking ownership of condp
+    static AstNodeExpr* newGuardAnd(AstNodeExpr* outerCondp, AstNodeExpr* condp) {
+        if (!outerCondp) return condp;
+        AstNodeExpr* const andp
+            = new AstLogAnd{condp->fileline(), outerCondp->cloneTreePure(false), condp};
+        andp->user1(outerCondp->user1() || condp->user1());
+        return andp;
+    }
     void visit(AstConstraintIf* nodep) override {
         AstNodeExpr* newp = nullptr;
         FileLine* const fl = nodep->fileline();
+        // A single soft item under 'if' without 'else' stays soft, as made by hoistGuardedSofts
+        const AstConstraintExpr* const softp = VN_CAST(nodep->thensp(), ConstraintExpr);
+        const bool isSoft = softp && softp->isSoft() && !softp->nextp() && !nodep->elsesp();
+        if (!m_wantSingle && !isSoft) {
+            AstNode* lastp = nodep;
+            hoistGuardedSofts(lastp, nodep, nullptr);
+        }
         AstNodeExpr* const thenp = editSingle(fl, nodep->thensp());
         AstNodeExpr* const elsep = editSingle(fl, nodep->elsesp());
         if (thenp && elsep) {
@@ -3293,7 +3362,9 @@ class ConstraintExprVisitor final : public VNVisitor {
         if (newp) {
             newp->dtypeSetBit();  // Result is boolean (prevents bare-var != 0 wrapping)
             newp->user1(true);  // Assume result-dependent
-            nodep->replaceWith(new AstConstraintExpr{fl, newp});
+            AstConstraintExpr* const exprp = new AstConstraintExpr{fl, newp};
+            exprp->isSoft(isSoft);
+            nodep->replaceWith(exprp);
         } else {
             nodep->unlinkFrBack();
         }
@@ -4100,13 +4171,9 @@ class ConstraintExprVisitor final : public VNVisitor {
         for (AstNode *stmtp = itemsp, *nextp; stmtp; stmtp = nextp) {
             nextp = stmtp->nextp();
             if (AstConstraintIf* const ifp = VN_CAST(stmtp, ConstraintIf)) {
-                FileLine* const fl = ifp->fileline();
                 // then branch: accumulated = outer && this.cond
                 AstNodeExpr* const thenCondp
-                    = outerCondp ? static_cast<AstNodeExpr*>(
-                                       new AstLogAnd{fl, outerCondp->cloneTreePure(false),
-                                                     ifp->condp()->cloneTreePure(false)})
-                                 : ifp->condp()->cloneTreePure(false);
+                    = newGuardAnd(outerCondp, ifp->condp()->cloneTreePure(false));
                 if (AstNode* const thenHoistp
                     = extractConditionalDisableSofts(ifp->thensp(), thenCondp)) {
                     hoistListp
@@ -4115,12 +4182,7 @@ class ConstraintExprVisitor final : public VNVisitor {
                 VL_DO_DANGLING(thenCondp->deleteTree(), thenCondp);
                 if (ifp->elsesp()) {
                     // else branch: accumulated = outer && !this.cond
-                    AstNodeExpr* const notInnerp
-                        = new AstLogNot{fl, ifp->condp()->cloneTreePure(false)};
-                    AstNodeExpr* const elseCondp
-                        = outerCondp ? static_cast<AstNodeExpr*>(new AstLogAnd{
-                                           fl, outerCondp->cloneTreePure(false), notInnerp})
-                                     : notInnerp;
+                    AstNodeExpr* const elseCondp = newGuardAnd(outerCondp, newNotCond(ifp));
                     if (AstNode* const elseHoistp
                         = extractConditionalDisableSofts(ifp->elsesp(), elseCondp)) {
                         hoistListp
@@ -6458,6 +6520,7 @@ class RandomizeVisitor final : public VNVisitor {
     struct DistBucket final {
         AstNodeExpr* rangep;  // A single value or an InsideRange
         AstNodeExpr* weightExprp;  // Effective 64-bit weight (range weight scaled by size)
+        AstNodeExpr* itemWeightp;  // The item's own weight, in the AstDist
     };
 
     // Non-zero-weight buckets with each weight extended to 64 bits.
@@ -6483,7 +6546,7 @@ class RandomizeVisitor final : public VNVisitor {
                     weightExprp = new AstMul{fl, weightExprp, sizep};
                 }
             }
-            buckets.push_back({ditemp->rangep(), weightExprp});
+            buckets.push_back({ditemp->rangep(), weightExprp, ditemp->weightp()});
         }
         return buckets;
     }
@@ -6501,14 +6564,23 @@ class RandomizeVisitor final : public VNVisitor {
         return eqp;
     }
 
-    // Hard constraint that the dist value stays inside the union of its ranges
-    // (IEEE 1800-2023 18.5.3: values outside the set must never appear).
+    // Hard constraint that the dist value is in a range with a nonzero weight.
     AstConstraintExpr* buildDistMembership(AstDist* distp,
                                            const std::vector<DistBucket>& buckets) {
+        // IEEE 1800-2023 18.5.3: values outside the set never appear, and a weight of zero is
+        // a constraint, also when it is only known at runtime (or solved, if it is random).
         FileLine* const fl = distp->fileline();
         AstNodeExpr* unionExprp = nullptr;
         for (const auto& bucket : buckets) {
-            AstNodeExpr* const memberp = newDistMembershipTerm(distp, bucket.rangep);
+            AstNodeExpr* memberp = newDistMembershipTerm(distp, bucket.rangep);
+            if (!VN_IS(bucket.itemWeightp, Const)) {
+                AstNodeExpr* const weightp = bucket.itemWeightp->cloneTreePure(false);
+                AstNeq* const nzp = new AstNeq{
+                    fl, weightp, new AstConst{fl, AstConst::WidthedValue{}, weightp->width(), 0}};
+                nzp->user1(true);
+                memberp = new AstLogAnd{fl, memberp, nzp};
+                memberp->user1(true);
+            }
             if (!unionExprp) {
                 unionExprp = memberp;
             } else {
@@ -6653,37 +6725,9 @@ class RandomizeVisitor final : public VNVisitor {
         return new AstConst{fl, AstConst::BitTrue{}, distBoundRefsRandVar(nodep)};
     }
 
-    // Membership union of the dist set, with runtime-zero weights excluded.
-    AstConstraintExpr* buildFrozenMembership(AstDist* distp,
-                                             const std::vector<DistBucket>& buckets) {
-        FileLine* const fl = distp->fileline();
-        AstNodeExpr* unionExprp = nullptr;
-        for (const auto& bucket : buckets) {
-            AstNodeExpr* termp = newDistMembershipTerm(distp, bucket.rangep);
-            // A weight that is zero only at runtime excludes the bucket's values too.
-            const bool runtimeWeight
-                = bucket.weightExprp->exists([](const AstNodeVarRef*) { return true; });
-            if (runtimeWeight) {
-                AstNeq* const nzp = new AstNeq{fl, bucket.weightExprp->cloneTreePure(false),
-                                               new AstConst{fl, AstConst::Unsized64{}, 0}};
-                nzp->user1(true);
-                termp = new AstLogAnd{fl, termp, nzp};
-                termp->user1(true);
-            }
-            if (unionExprp) {
-                unionExprp = new AstLogOr{fl, unionExprp, termp};
-                unionExprp->user1(true);
-            } else {
-                unionExprp = termp;
-            }
-        }
-        return new AstConstraintExpr{fl, unionExprp};
-    }
-
-    // Weighted chain while the dist value can still be freshly drawn, membership
-    // once it is frozen; membership only when it can never be re-drawn.
-    AstNode* gateFrozenDist(AstNode* chainp, AstDist* distp,
-                            const std::vector<DistBucket>& buckets, AstVar* randModeVarp) {
+    // Weighted chain, gated on the dist value still being drawable; nullptr if it never is.
+    AstNode* gateFrozenDist(AstNode* chainp, AstDist* distp, AstVar* randModeVarp) {
+        // Once frozen, the hard membership alone constrains the value
         FileLine* const fl = distp->fileline();
         AstNodeExpr* gatep = newDistGate(distp->exprp(), randModeVarp, fl);
         if (VN_IS(gatep, Const)) {
@@ -6691,9 +6735,10 @@ class RandomizeVisitor final : public VNVisitor {
             VL_DO_DANGLING(pushDeletep(gatep), gatep);
             if (drawable) return chainp;
             VL_DO_DANGLING(pushDeletep(chainp), chainp);
-            return buildFrozenMembership(distp, buckets);
+            return nullptr;
         }
-        return new AstConstraintIf{fl, gatep, chainp, buildFrozenMembership(distp, buckets)};
+        // A constraint 'if' condition is boolean, and the gate may be a wider mode word
+        return new AstConstraintIf{fl, new AstRedOr{fl, gatep}, chainp, nullptr};
     }
 
     AstNodeExpr* newUniformRangePick(AstDist* distp, const AstInsideRange* irp) {
@@ -6890,12 +6935,12 @@ class RandomizeVisitor final : public VNVisitor {
 
             AstNode* chainp = buildWeightedBucketChain(distp, buckets, bucketVarp, cumSums);
 
-            chainp = gateFrozenDist(chainp, distp, buckets, randModeVarp);
+            chainp = gateFrozenDist(chainp, distp, randModeVarp);
 
-            constrExprp->replaceWith(chainp);
-            VL_DO_DANGLING(pushDeletep(constrExprp), constrExprp);
             // Hard membership precedes the soft bucket chain in the constraint list.
-            chainp->addHereThisAsNext(membershipp);
+            constrExprp->replaceWith(membershipp);
+            VL_DO_DANGLING(pushDeletep(constrExprp), constrExprp);
+            if (chainp) membershipp->addNextHere(chainp);
 
             // Clean up nodes used only as clone templates (never inserted into tree)
             for (auto& bucket : buckets) {
