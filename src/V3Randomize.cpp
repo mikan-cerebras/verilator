@@ -8574,7 +8574,8 @@ class RandomizeVisitor final : public VNVisitor {
             if (memberSelp && VN_IS(queueVarp->dtypep()->skipRefp(), AssocArrayDType)) return;
             AstVar* const sizeVarp
                 = memberSelp ? createOrGetMemberSizeVar(queueVarp, fl, nodep->findIntDType())
-                             : createOrGetSizeVar(classp, queueVarp, fl, nodep->findIntDType());
+                             : createOrGetSizeVar(VN_AS(queueVarp->user2p(), Class), queueVarp, fl,
+                                                  nodep->findIntDType());
             const auto newSizeRefp = [&]() -> AstNodeExpr* {
                 if (memberSelp) return buildMemberSelExprp(memberSelp, sizeVarp);
                 return new AstVarRef{fl, VN_AS(sizeVarp->user2p(), NodeModule), sizeVarp,
