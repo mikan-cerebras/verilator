@@ -429,7 +429,8 @@ class RandomizeMarkVisitor final : public VNVisitor {
     //  AstVar::user1()         -> bool.  Set true to indicate needs rand_mode
     //  AstVar::user2p()        -> AstNodeModule*. Pointer to containing module
     //  AstNodeFTask::user2p()  -> AstNodeModule*. Pointer to containing module
-    //  AstMemberSel::user2p()  -> AstNodeModule*. Pointer to containing module
+    //  AstMemberSel::user2p()  -> AstNodeModule*. Pointer to containing module, nullptr if
+    //                                    in a cloned constraint
     const VNUser1InUse m_inuser1;
     const VNUser2InUse m_inuser2;
 
@@ -2175,8 +2176,8 @@ class ConstraintExprVisitor final : public VNVisitor {
         if (m_inlineInitBlockp) return m_inlineInitBlockp;
         varp->user3(true);
         if (memberselOrStructSel) {
-            // Registered on each randomize(), as the selected object may change. In the setup
-            // of the constraint, as every class solving the constraint runs it.
+            // Not in new(), as the selected object may not exist yet. In the setup of the
+            // constraint, as every class solving the constraint runs it.
             UASSERT_OBJ(m_memberselInitTaskp, varp, "No setup task for the constraint");
             return newInitBlockp(m_memberselInitTaskp);
         } else {
