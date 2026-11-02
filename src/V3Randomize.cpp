@@ -452,14 +452,16 @@ class RandomizeMarkVisitor final : public VNVisitor {
     AstClass* m_withClassp = nullptr;  // Class of obj in the current obj.randomize() with
 
     // METHODS
-    // Mark all rand variables in IS_RANDOMIZED_GLOBAL classes as globalConstrained
-    void markGlobalConstrainedVars(AstClass* classp) {
+    // Mark the rand variables, except handles, of the class of a globally constrained member
+    void markGlobalConstrainedVars(const AstClass* classp) {
         for (const AstClass* cp = classp; cp;
              cp = cp->extendsp() ? cp->extendsp()->classp() : nullptr) {
             for (AstNode* const memberp : cp->memberspList()) {
                 AstVar* const varp = VN_CAST(memberp, Var);
-                if (!varp) continue;
-                if (varp->rand().isRandomizable()) varp->globalConstrained(true);
+                if (!varp || !varp->rand().isRandomizable()) continue;
+                // A handle is globally constrained only if a constraint selects through it
+                if (!VN_IS(varp->dtypep()->skipRefp(), ClassRefDType))
+                    varp->globalConstrained(true);
             }
         }
     }
@@ -468,6 +470,34 @@ class RandomizeMarkVisitor final : public VNVisitor {
         // Not isRandIndex: std::randomize() arguments get their own variables only later
         return indexp->exists([](const AstNode* const nodep) {
             return (VN_IS(nodep, NodeVarRef) || VN_IS(nodep, MemberSel)) && nodep->user1();
+        });
+    }
+    // Whether a constraint of the class has two member selects not from a variable or member
+    static bool selectsElementMembersTwice(const AstClass* classp) {
+        // Such as selects of object array elements, which a constraint cloned for an object of
+        // the class may not support ("Multiple expressions inside indices"), so such an object
+        // keeps its own randomize()
+        return classp->existsMember([](const AstClass*, const AstConstraint* constrp) {
+            int count = 0;
+            constrp->foreach([&](const AstMemberSel* selp) {
+                if (!VN_IS(selp->fromp(), NodeVarRef) && !VN_IS(selp->fromp(), MemberSel)) ++count;
+            });
+            return count > 1;
+        });
+    }
+    // Mark the rand handles that the member selects of a constraint select through
+    static void markSelectedHandles(AstNode* nodep) {
+        // Such a member is solved with the class of the constraint, so the constraint and the
+        // member's own constraints are solved together (IEEE 1800-2023 18.5.8). Other members
+        // are randomized by their own randomize().
+        nodep->foreach([](const AstMemberSel* selp) {
+            AstVar* varp = nullptr;
+            if (const AstNodeVarRef* const refp = VN_CAST(selp->fromp(), NodeVarRef)) {
+                varp = refp->varp();
+            } else if (const AstMemberSel* const fromSelp = VN_CAST(selp->fromp(), MemberSel)) {
+                varp = fromSelp->varp();
+            }
+            if (varp && varp->rand().isRandomizable()) varp->globalConstrained(true);
         });
     }
     // Check if a variable is listed in std::randomize() arguments
@@ -513,7 +543,6 @@ class RandomizeMarkVisitor final : public VNVisitor {
                         AstClass* const rclassp = classRefp->classp();
                         if (!rclassp->user1()) {
                             rclassp->user1(IS_RANDOMIZED_GLOBAL);
-                            markGlobalConstrainedVars(rclassp);
                             markMembers(rclassp);
                             markDerived(rclassp);
                         }
@@ -546,11 +575,18 @@ class RandomizeMarkVisitor final : public VNVisitor {
             if (classp->user1()) markDerived(classp);
         }
     }
-    // Clone the constraints of the objects of the globally constrained members of each class
+    // Mark the globally constrained members, and clone the constraints of their objects
     void cloneMemberConstraints() {
         // __VBasicRand does not randomize the solver variables of such an object, so every
         // class having the member solves them. They are cloned into the declaring class of the
-        // member, which all such classes inherit.
+        // member, which all such classes inherit. As the marks depend only on the constraints,
+        // they do not depend on the order of the classes or randomize() calls.
+        for (AstClass* const classp : m_classps) {
+            for (AstNode* const memberp : classp->memberspList()) {
+                if (VN_IS(memberp, Constraint)) markSelectedHandles(memberp);
+            }
+        }
+        std::vector<std::pair<AstClass*, AstVar*>> handles;  // Owner class and handle
         for (AstClass* const classp : m_classps) {
             for (AstNode* const memberp : classp->memberspList()) {
                 AstVar* const varp = VN_CAST(memberp, Var);
@@ -558,16 +594,38 @@ class RandomizeMarkVisitor final : public VNVisitor {
                 const AstClassRefDType* const classRefp
                     = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
                 if (!classRefp) continue;
-                AstVarRef* const rootVarRefp
-                    = new AstVarRef{varp->fileline(), classp, varp, VAccess::READ};
-                const std::vector<AstVar*> emptyPath;
-                classRefp->classp()->foreachMember(
-                    [&](AstClass* const, AstConstraint* const constrp) {
-                        processNestedConstraint(constrp, rootVarRefp, emptyPath, classp);
-                    });
-                cloneNestedConstraintsRecurse(rootVarRefp, classRefp->classp(), emptyPath, classp);
-                VL_DO_DANGLING(rootVarRefp->deleteTree(), rootVarRefp);
+                if (selectsElementMembersTwice(classRefp->classp())) {
+                    varp->globalConstrained(false);
+                    continue;
+                }
+                markGlobalConstrainedVars(classRefp->classp());
+                handles.emplace_back(classp, varp);
             }
+        }
+        for (const std::pair<AstClass*, AstVar*>& classVar : handles) {
+            AstClass* const classp = classVar.first;
+            AstVar* const varp = classVar.second;
+            AstClass* const memberClassp
+                = VN_AS(varp->dtypep()->skipRefp(), ClassRefDType)->classp();
+            AstVarRef* const rootVarRefp
+                = new AstVarRef{varp->fileline(), classp, varp, VAccess::READ};
+            const std::vector<AstVar*> emptyPath;
+            memberClassp->foreachMember([&](AstClass* const, AstConstraint* const constrp) {
+                processNestedConstraint(constrp, rootVarRefp, emptyPath, classp);
+            });
+            cloneNestedConstraintsRecurse(rootVarRefp, memberClassp, emptyPath, classp);
+            VL_DO_DANGLING(rootVarRefp->deleteTree(), rootVarRefp);
+        }
+        // Into each randomized class, as only the class's constraints decide whether needed
+        for (AstClass* const classp : m_classps) {
+            if (!classp->user1()) continue;
+            classp->foreachMember([&](AstClass* const ownerClassp, AstVar* const memberVarp) {
+                if (!memberVarp->rand().isRandomizable() || !isDynHandleArray(memberVarp)) return;
+                AstVarRef* const arrRefp = new AstVarRef{memberVarp->fileline(), ownerClassp,
+                                                         memberVarp, VAccess::READ};
+                cloneElementConstraints(arrRefp, memberVarp->name(), classp);
+                VL_DO_DANGLING(arrRefp->deleteTree(), arrRefp);
+            });
         }
     }
     void setPackageRefs() {
@@ -800,6 +858,8 @@ class RandomizeMarkVisitor final : public VNVisitor {
             if (!memberVarp->rand().isRandomizable()) return;
             const AstClassRefDType* const memberClassRefp
                 = VN_CAST(memberVarp->dtypep()->skipRefp(), ClassRefDType);
+            // Others are randomized by their own randomize()
+            if (memberClassRefp && !memberVarp->globalConstrained()) return;
             std::vector<AstVar*> newPath = pathToClass;
             newPath.push_back(memberVarp);
             if (!memberClassRefp) {
@@ -1061,23 +1121,6 @@ class RandomizeMarkVisitor final : public VNVisitor {
         if (classp) {
             if (!classp->user1()) classp->user1(IS_RANDOMIZED);
             markMembers(classp);
-            // Clone constraints of handle arrays, and mark the members of IS_RANDOMIZED_GLOBAL
-            // classes solved with this class (see cloneMemberConstraints)
-            classp->foreachMember([&](AstClass* const ownerClassp, AstVar* const memberVarp) {
-                if (!memberVarp->rand().isRandomizable()) return;
-                const AstNodeDType* const dtypep = memberVarp->dtypep()->skipRefp();
-                const AstClassRefDType* const classRefp = VN_CAST(dtypep, ClassRefDType);
-                if (!classRefp) {
-                    if (!isDynHandleArray(memberVarp)) return;
-                    AstVarRef* const arrRefp
-                        = new AstVarRef{nodep->fileline(), ownerClassp, memberVarp, VAccess::READ};
-                    cloneElementConstraints(arrRefp, memberVarp->name(), classp);
-                    VL_DO_DANGLING(arrRefp->deleteTree(), arrRefp);
-                    return;
-                }
-                if (classRefp->classp()->user1() != IS_RANDOMIZED_GLOBAL) return;
-                memberVarp->globalConstrained(true);
-            });
         }
         if (nodep->classOrPackagep()->name() == "std") {
             m_stdRandCallp = nullptr;
@@ -1086,6 +1129,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
             }
             return;
         }
+        if (nodep->withp()) markSelectedHandles(nodep->withp());
         for (AstArg* const argp : nodep->argspList()) {
             // randomize(null): handle before IS_RANDOMIZED_INLINE so the
             // check-only path does not allocate unused __Vrandmode slots.
