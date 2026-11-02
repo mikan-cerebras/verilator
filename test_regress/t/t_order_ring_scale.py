@@ -16,11 +16,12 @@ test.top_filename = test.obj_dir + "/t_order_ring_scale.v"
 
 # Registers in a ring, each also reading one other register, so ordering cuts many loops of
 # soft edges. Only measures scheduling time, the model is not built.
-SIZE_SMALL = 2000
+SIZE_SMALL = 4000
 SIZE_LARGE = SIZE_SMALL * 4
-# Linear scaling gives 4x, quadratic gives 16x. Cutting loops still grows about as N^1.6
-# here, but at these sizes it is a small part of scheduling, which grows about 4.5x.
-MAX_RATIO = 8
+# Linear scaling gives 4x, quadratic gives 16x. Here scheduling grows about 7x (opt build), as
+# cutting loops still grows about as N^1.6 on this design; quadratic ranking or placement grows
+# over 40x.
+MAX_RATIO = 16
 # Ignore the ratio when scheduling is fast enough that timer noise dominates
 MIN_SECONDS = 0.25
 
