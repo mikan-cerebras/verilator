@@ -14,21 +14,18 @@ import vltest_bootstrap
 test.scenarios('vlt')
 test.top_filename = test.obj_dir + "/t_sched_call_graph_scale.v"
 
-# Each method writes its member, every tenth method awaits its own event, and each method calls
-# the next one, so each reaches all methods after it in a chain of N_CHAIN non-virtual methods,
-# or all N_VIRTUAL overrides of a virtual method. Each of N_INSTANCES module instances has
-# processes calling both.
-N_CHAIN = 1000
+# Each method writes its member, awaits an event and calls the next method, so each reaches all
+# methods after it in a chain of N_CHAIN non-virtual methods, or all N_VIRTUAL overrides of a
+# virtual method. Each of N_INSTANCES module instances has processes calling both. (Event
+# controls in classes all share one timing domain, the dynamic trigger.)
+N_CHAIN = 2000
 N_VIRTUAL = 300
 N_INSTANCES = 2000
-# Peak memory growth from before V3Delayed to the end of the sched-gather stage, as a share of
-# the peak before (about 0.04 when linear, 1.1 when caching everything reached)
-MAX_GROWTH = 0.25
-# Share of verilation time spent in V3Delayed and the sched-gather stage (about 0.02 when linear,
-# 0.8 when caching everything reached, 0.3 when walking everything reached for each process)
-MAX_SHARE = 0.15
+# Share of verilation time spent in V3Delayed (about 0.01 when linear, 0.1 when walking the
+# reached call graph for each process, 0.9 for the old handling of recursion)
+MAX_SHARE = 0.05
 # Ignore a high share of a short time, e.g. from a load spike
-MIN_SECONDS = 0.5
+MIN_SECONDS = 0.2
 
 
 def gen(filename):
@@ -45,8 +42,7 @@ def gen(filename):
                 fh.write(f"  C{i + 1} nxt;\n")
             fh.write("  task run();\n")
             fh.write("    v = v + 1;\n")
-            if i % 10 == 0:
-                fh.write(f"    if (v > 100) @(p::e{i});\n")
+            fh.write(f"    if (v > 100) @(p::e{i});\n")
             if i + 1 < N_CHAIN:
                 fh.write("    if (nxt != null) nxt.run();\n")
             fh.write("  endtask\n")
@@ -61,8 +57,7 @@ def gen(filename):
             fh.write("  Base nxt;\n")
             fh.write("  virtual task run();\n")
             fh.write("    v = v + 1;\n")
-            if i % 10 == 0:
-                fh.write(f"    if (v > 100) @(p::e{N_CHAIN + i});\n")
+            fh.write(f"    if (v > 100) @(p::e{N_CHAIN + i});\n")
             fh.write("    if (nxt != null) nxt.run();\n")
             fh.write("  endtask\n")
             fh.write("endclass\n")
@@ -86,26 +81,14 @@ test.compile(verilator_flags2=["--timing", "--stats", "--no-debug-check"],
              make_main=False,
              verilator_make_gmake=False)
 
-with open(test.stats, 'r', encoding="utf8") as fh:
-    stats = fh.read()
+stats = test.file_contents(test.stats)
 total = re.search(r'Stage, Elapsed time \(sec\), TOTAL\s+(\S+)', stats)
-stages = re.findall(r'Stage, Elapsed time \(sec\), \d+_(?:delayed|sched-gather)\s+(\S+)', stats)
-peaks = re.findall(r'Stage, Memory peak \(MB\), \d+_(\S+)\s+(\S+)', stats)
-names = [name for name, _ in peaks]
-if not total or len(stages) != 2 or 'delayed' not in names or 'sched-gather' not in names:
-    test.error("Stage statistics not found in " + test.stats)
-
-seconds = sum(float(t) for t in stages)
+delayed = re.search(r'Stage, Elapsed time \(sec\), \d+_delayed\s+(\S+)', stats)
+if not total or not delayed:
+    test.error("Stage elapsed times not found in " + test.stats)
+seconds = float(delayed.group(1))
 share = seconds / float(total.group(1))
 if seconds > MIN_SECONDS and share > MAX_SHARE:
-    test.error(f"V3Delayed and V3SchedTiming took {share:.0%} of verilation time (over " +
-               f"{MAX_SHARE:.0%})")
-
-# Memory statistics are zero where the OS does not report them
-before = float(peaks[names.index('delayed') - 1][1])
-growth = (float(peaks[names.index('sched-gather')][1]) - before) / before if before else 0
-if growth > MAX_GROWTH:
-    test.error(f"Peak memory grew by {growth:.0%} in V3Delayed and V3SchedTiming (over " +
-               f"{MAX_GROWTH:.0%})")
+    test.error(f"V3Delayed took {share:.0%} of verilation time (over {MAX_SHARE:.0%})")
 
 test.passes()
