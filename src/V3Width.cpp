@@ -5403,6 +5403,10 @@ class WidthVisitor final : public VNVisitor {
     void handleRandomizeArgs(AstNodeFTaskRef* const nodep, AstClass* const classp) {
         bool hasNonNullArgs = false;
         AstConst* nullp = nullptr;
+        AstMethodCall* const methodCallp = VN_CAST(nodep, MethodCall);
+        AstNodeExpr* const fromp = methodCallp ? methodCallp->fromp() : nullptr;
+        const AstNode* const containerp
+            = VN_IS(fromp, VarRef) ? static_cast<const AstNode*>(fromp) : classp;
         for (AstArg* const argp : nodep->argspList()) {
             AstVar* randVarp = nullptr;
             AstNodeExpr* exprp = argp->exprp();
@@ -5413,42 +5417,40 @@ class WidthVisitor final : public VNVisitor {
                 }
             }
             hasNonNullArgs = true;
-            AstVar* fromVarp = nullptr;  // If it's a method call, the leftmost element
-                                         // of the dot hierarchy
-            if (AstMethodCall* methodCallp = VN_CAST(nodep, MethodCall)) {
-                AstNodeExpr* fromp = methodCallp->fromp();
-                while (AstMemberSel* const memberSelp = VN_CAST(fromp, MemberSel)) {
-                    fromp = memberSelp->fromp();
-                }
-                AstVarRef* const varrefp = VN_AS(fromp, VarRef);
-                fromVarp = varrefp->varp();
+            // V3LinkDot repeated the target in each argument, so it is evaluated more than once
+            if (fromp && !fromp->isPure()) {
+                nodep->v3warn(
+                    E_UNSUPPORTED,
+                    "Unsupported: 'randomize()' argument list on a target with side effects");
+                return;
             }
             if (!VN_IS(exprp, VarRef) && !VN_IS(exprp, MemberSel)) {
                 argp->v3error("'randomize()' argument must be a variable contained in "
-                              << (fromVarp ? fromVarp->prettyNameQ() : classp->prettyNameQ()));
+                              << containerp->prettyNameQ());
                 VL_DO_DANGLING(argp->unlinkFrBack()->deleteTree(), argp);
                 continue;
             }
-            while (exprp) {
+            // Members selected from the target become randomizable, not the target itself
+            bool supported = true;
+            while (exprp && !(fromp && V3Randomize::isRandomizeTarget(exprp, fromp))) {
                 if (AstMemberSel* const memberSelp = VN_CAST(exprp, MemberSel)) {
                     randVarp = memberSelp->varp();
                     exprp = memberSelp->fromp();
-                } else {
-                    if (AstVarRef* const varrefp = VN_CAST(exprp, VarRef)) {
-                        randVarp = varrefp->varp();
-                    } else {
-                        argp->v3warn(
-                            E_UNSUPPORTED,
-                            "Unsupported: Non-variable expression as 'randomize()' argument");
-                        VL_DO_DANGLING(argp->unlinkFrBack()->deleteTree(), argp);
-                    }
+                } else if (AstVarRef* const varrefp = VN_CAST(exprp, VarRef)) {
+                    randVarp = varrefp->varp();
                     exprp = nullptr;
+                } else {
+                    supported = false;
+                    break;
                 }
-                // All variables in the dot hierarchy must be randomizable
-                if (randVarp && !randVarp->isRand()) randVarp->rand(VRandAttr::RAND_INLINE);
+                // All variables selected from the target must be randomizable
+                if (!randVarp->isRand()) randVarp->rand(VRandAttr::RAND_INLINE);
             }
-            // randVarp is now the leftmost element from the dot hierarchy in argp->exprp()
-            if (randVarp == fromVarp) {
+            if (!supported) {
+                argp->v3warn(E_UNSUPPORTED,
+                             "Unsupported: Non-variable expression as 'randomize()' argument");
+                VL_DO_DANGLING(argp->unlinkFrBack()->deleteTree(), argp);
+            } else if (exprp) {
                 // The passed in variable is MemberSel'ected from the MethodCall target
             } else if (classp->existsMember([&](const AstClass*, const AstVar* memberVarp) {
                            return memberVarp == randVarp;
@@ -5458,7 +5460,7 @@ class WidthVisitor final : public VNVisitor {
                 // Passed in a constant or complex expression, or the above conditions are not
                 // met
                 argp->v3error("'randomize()' argument must be a variable contained in "
-                              << (fromVarp ? fromVarp->prettyNameQ() : classp->prettyNameQ()));
+                              << containerp->prettyNameQ());
                 VL_DO_DANGLING(argp->unlinkFrBack()->deleteTree(), argp);
             }
         }
