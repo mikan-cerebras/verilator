@@ -87,16 +87,17 @@ public:
     // for scalars, "(select arr idx...)" for array element j). Used by BSAT
     // to query/re-assert one whole element's value, not a single bit.
     virtual void emitElement(std::ostream& s, int j) const;
-    // Emit the current runtime value as an SMT bit-vector literal (#b...).
-    // Used by randomize(null) to pin a var to its existing value.
-    virtual void emitConcreteValue(std::ostream& s) const;
+    // Emit the current runtime value of element j (see emitElement) as an SMT literal
+    void emitConcreteValue(std::ostream& s, int j) const;
     virtual int totalWidth() const;
     mutable std::shared_ptr<const ArrayInfoMap> m_arrVarsRefp;
     void setArrayInfo(const std::shared_ptr<const ArrayInfoMap>& arrVarsRefp) const {
         m_arrVarsRefp = arrVarsRefp;
+        // Counts depend on the array info, which may come from another randomizer
+        // sharing this variable
+        count_cache.clear();
     }
     mutable std::map<std::string, int> count_cache;
-    void clearCountCache() const { count_cache.clear(); }
     int countMatchingElements(const ArrayInfoMap& arr_vars, const std::string& base_name) const {
         if (VL_LIKELY(count_cache.find(base_name) != count_cache.end()))
             return count_cache[base_name];
@@ -508,7 +509,6 @@ public:
             m_index = 0;
             clear_arr_table(name);
             record_arr_table(var, name, dimension, {}, {});
-            m_vars[name]->clearCountCache();
         }
     }
 
@@ -535,7 +535,6 @@ public:
             m_index = 0;
             clear_arr_table(name);
             record_arr_table(var, name, dimension, {}, {});
-            m_vars[name]->clearCountCache();
         }
     }
     // Register unpacked array of structs
@@ -562,7 +561,6 @@ public:
             m_index = 0;
             clear_arr_table(name);
             record_arr_table(var, name, dimension, {}, {});
-            m_vars[name]->clearCountCache();
         }
     }
 
