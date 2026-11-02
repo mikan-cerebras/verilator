@@ -438,7 +438,6 @@ class RandomizeMarkVisitor final : public VNVisitor {
 
     BaseToDerivedMap m_baseToDerivedMap;  // Mapping from base classes to classes that extend them
     std::vector<AstClass*> m_classps;  // All classes, in tree order
-    std::vector<AstWith*> m_randWithps;  // 'with' clauses of obj.randomize() calls
     AstClass* m_classp = nullptr;  // Current class
     AstNode* m_constraintExprGenp = nullptr;  // Current constraint or constraint if expression
     AstNodeModule* m_modp = nullptr;  // Current module
@@ -473,27 +472,23 @@ class RandomizeMarkVisitor final : public VNVisitor {
             return (VN_IS(nodep, NodeVarRef) || VN_IS(nodep, MemberSel)) && nodep->user1();
         });
     }
-    // Whether a constraint item of the class selects members of two object array elements
+    // Whether a constraint of the class has two member selects not from a variable or member
     static bool selectsElementMembersTwice(const AstClass* classp) {
-        // A constraint cloned for an object of the class does not support that ("Multiple
-        // expressions inside indices"), so such an object keeps its own randomize()
+        // Such as selects of object array elements, which a constraint cloned for an object of
+        // the class may not support ("Multiple expressions inside indices"), so such an object
+        // keeps its own randomize()
         return classp->existsMember([](const AstClass*, const AstConstraint* constrp) {
-            return constrp->exists([](const AstConstraintExpr* exprp) {
-                int count = 0;
-                exprp->foreach([&](const AstMemberSel* selp) {
-                    if (VN_IS(selp->fromp()->dtypep()->skipRefp(), ClassRefDType)
-                        && !VN_IS(selp->fromp(), NodeVarRef) && !VN_IS(selp->fromp(), MemberSel)) {
-                        ++count;
-                    }
-                });
-                return count > 1;
+            int count = 0;
+            constrp->foreach([&](const AstMemberSel* selp) {
+                if (!VN_IS(selp->fromp(), NodeVarRef) && !VN_IS(selp->fromp(), MemberSel)) ++count;
             });
+            return count > 1;
         });
     }
     // Mark the rand handles that the member selects of a constraint select through
     static void markSelectedHandles(AstNode* nodep) {
         // Such a member is solved with the class of the constraint, so the constraint and the
-        // member's own constraints are solved together (IEEE 1800-2023 18.5.9). Other members
+        // member's own constraints are solved together (IEEE 1800-2023 18.5.8). Other members
         // are randomized by their own randomize().
         nodep->foreach([](const AstMemberSel* selp) {
             AstVar* varp = nullptr;
@@ -502,12 +497,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
             } else if (const AstMemberSel* const fromSelp = VN_CAST(selp->fromp(), MemberSel)) {
                 varp = fromSelp->varp();
             }
-            if (!varp || !varp->rand().isRandomizable()) return;
-            const AstClassRefDType* const classRefp
-                = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
-            if (classRefp && !selectsElementMembersTwice(classRefp->classp())) {
-                varp->globalConstrained(true);
-            }
+            if (varp && varp->rand().isRandomizable()) varp->globalConstrained(true);
         });
     }
     // Check if a variable is listed in std::randomize() arguments
@@ -592,10 +582,10 @@ class RandomizeMarkVisitor final : public VNVisitor {
         // member, which all such classes inherit. As the marks depend only on the constraints,
         // they do not depend on the order of the classes or randomize() calls.
         for (AstClass* const classp : m_classps) {
-            classp->foreachMember(
-                [](AstClass*, AstConstraint* const constrp) { markSelectedHandles(constrp); });
+            for (AstNode* const memberp : classp->memberspList()) {
+                if (VN_IS(memberp, Constraint)) markSelectedHandles(memberp);
+            }
         }
-        for (AstWith* const withp : m_randWithps) markSelectedHandles(withp);
         std::vector<std::pair<AstClass*, AstVar*>> handles;  // Owner class and handle
         for (AstClass* const classp : m_classps) {
             for (AstNode* const memberp : classp->memberspList()) {
@@ -604,11 +594,15 @@ class RandomizeMarkVisitor final : public VNVisitor {
                 const AstClassRefDType* const classRefp
                     = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
                 if (!classRefp) continue;
+                if (selectsElementMembersTwice(classRefp->classp())) {
+                    varp->globalConstrained(false);
+                    continue;
+                }
                 markGlobalConstrainedVars(classRefp->classp());
                 handles.emplace_back(classp, varp);
             }
         }
-        for (const auto& classVar : handles) {
+        for (const std::pair<AstClass*, AstVar*>& classVar : handles) {
             AstClass* const classp = classVar.first;
             AstVar* const varp = classVar.second;
             AstClass* const memberClassp
@@ -1128,9 +1122,6 @@ class RandomizeMarkVisitor final : public VNVisitor {
             if (!classp->user1()) classp->user1(IS_RANDOMIZED);
             markMembers(classp);
         }
-        if (nodep->classOrPackagep()->name() != "std" && nodep->withp()) {
-            m_randWithps.push_back(nodep->withp());
-        }
         if (nodep->classOrPackagep()->name() == "std") {
             m_stdRandCallp = nullptr;
             for (AstArg* const argp : nodep->argspList()) {
@@ -1138,6 +1129,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
             }
             return;
         }
+        if (nodep->withp()) markSelectedHandles(nodep->withp());
         for (AstArg* const argp : nodep->argspList()) {
             // randomize(null): handle before IS_RANDOMIZED_INLINE so the
             // check-only path does not allocate unused __Vrandmode slots.
