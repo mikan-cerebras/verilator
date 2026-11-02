@@ -433,13 +433,13 @@ class RandomizeMarkVisitor final : public VNVisitor {
     const VNUser1InUse m_inuser1;
     const VNUser2InUse m_inuser2;
 
-    using DerivedSet = std::unordered_set<AstClass*>;
-    using BaseToDerivedMap = std::unordered_map<const AstClass*, DerivedSet>;
+    using BaseToDerivedMap = std::unordered_map<const AstClass*, std::vector<AstClass*>>;
 
     BaseToDerivedMap m_baseToDerivedMap;  // Mapping from base classes to classes that extend them
+    std::vector<AstClass*> m_classps;  // All classes, in tree order
     AstClass* m_classp = nullptr;  // Current class
     AstNode* m_constraintExprGenp = nullptr;  // Current constraint or constraint if expression
-    AstNodeModule* m_modp;  // Current module
+    AstNodeModule* m_modp = nullptr;  // Current module
     AstNodeStmt* m_stmtp = nullptr;  // Current statement
     AstNodeFTaskRef* m_stdRandCallp = nullptr;  // Current std::randomize() call
     bool m_inStdWith = false;  // True when inside a 'with {}' clause
@@ -530,7 +530,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
     void markDerived(const AstClass* nodep) {
         const auto it = m_baseToDerivedMap.find(nodep);
         if (it != m_baseToDerivedMap.end()) {
-            for (auto* classp : it->second) {
+            for (AstClass* const classp : it->second) {
                 if (classp->user1() < nodep->user1()) {
                     classp->user1(nodep->user1());
                     markMembers(classp);
@@ -540,8 +540,33 @@ class RandomizeMarkVisitor final : public VNVisitor {
         }
     }
     void markAllDerived() {
-        for (const auto& p : m_baseToDerivedMap) {
-            if (p.first->user1()) markDerived(p.first);
+        // In tree order, so the marking does not depend on the memory layout
+        for (const AstClass* const classp : m_classps) {
+            if (classp->user1()) markDerived(classp);
+        }
+    }
+    // Clone the constraints of the objects of the globally constrained members of each class
+    void cloneMemberConstraints() {
+        // __VBasicRand does not randomize the solver variables of such an object, so every
+        // class having the member solves them. They are cloned into the declaring class of the
+        // member, which all such classes inherit.
+        for (AstClass* const classp : m_classps) {
+            for (AstNode* const memberp : classp->memberspList()) {
+                AstVar* const varp = VN_CAST(memberp, Var);
+                if (!varp || !varp->globalConstrained()) continue;
+                const AstClassRefDType* const classRefp
+                    = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
+                if (!classRefp) continue;
+                AstVarRef* const rootVarRefp
+                    = new AstVarRef{varp->fileline(), classp, varp, VAccess::READ};
+                const std::vector<AstVar*> emptyPath;
+                classRefp->classp()->foreachMember(
+                    [&](AstClass* const, AstConstraint* const constrp) {
+                        processNestedConstraint(constrp, rootVarRefp, emptyPath, classp);
+                    });
+                cloneNestedConstraintsRecurse(rootVarRefp, classRefp->classp(), emptyPath, classp);
+                VL_DO_DANGLING(rootVarRefp->deleteTree(), rootVarRefp);
+            }
         }
     }
     void setPackageRefs() {
@@ -853,11 +878,12 @@ class RandomizeMarkVisitor final : public VNVisitor {
         VL_RESTORER(m_classp);
         VL_RESTORER(m_modp);
         m_modp = m_classp = nodep;
+        m_classps.push_back(nodep);
         iterateChildrenConst(nodep);
         if (nodep->extendsp()) {
             // Record derived class for inheritance hierarchy tracking
             const AstClass* const basep = nodep->extendsp()->classp();
-            m_baseToDerivedMap[basep].insert(nodep);
+            m_baseToDerivedMap[basep].push_back(nodep);
         }
     }
     void visit(AstNodeStmt* nodep) override {
@@ -1034,7 +1060,8 @@ class RandomizeMarkVisitor final : public VNVisitor {
         if (classp) {
             if (!classp->user1()) classp->user1(IS_RANDOMIZED);
             markMembers(classp);
-            // Clone constraints from all IS_RANDOMIZED_GLOBAL members
+            // Clone constraints of handle arrays, and mark the members of IS_RANDOMIZED_GLOBAL
+            // classes solved with this class (see cloneMemberConstraints)
             classp->foreachMember([&](AstClass* const ownerClassp, AstVar* const memberVarp) {
                 if (!memberVarp->rand().isRandomizable()) return;
                 const AstNodeDType* const dtypep = memberVarp->dtypep()->skipRefp();
@@ -1047,20 +1074,8 @@ class RandomizeMarkVisitor final : public VNVisitor {
                     VL_DO_DANGLING(arrRefp->deleteTree(), arrRefp);
                     return;
                 }
-                AstClass* const memberClassp = classRefp->classp();
-                if (memberClassp->user1() != IS_RANDOMIZED_GLOBAL) return;
+                if (classRefp->classp()->user1() != IS_RANDOMIZED_GLOBAL) return;
                 memberVarp->globalConstrained(true);
-                // Clone constraints from this IS_RANDOMIZED_GLOBAL member class
-                // The member may be inherited, so reference it through its declaring class
-                AstVarRef* rootVarRefp
-                    = new AstVarRef{nodep->fileline(), ownerClassp, memberVarp, VAccess::READ};
-                std::vector<AstVar*> emptyPath;
-                memberClassp->foreachMember([&](AstClass* const, AstConstraint* const constrp) {
-                    processNestedConstraint(constrp, rootVarRefp, emptyPath, classp);
-                });
-                cloneNestedConstraintsRecurse(rootVarRefp, memberClassp, emptyPath, classp);
-                // Delete the temporary VarRef created for constraint cloning
-                VL_DO_DANGLING(rootVarRefp->deleteTree(), rootVarRefp);
             });
         }
         if (nodep->classOrPackagep()->name() == "std") {
@@ -1211,6 +1226,7 @@ public:
         , m_elemModeArrays{elemModeArrays} {
         iterateConst(nodep);
         markAllDerived();
+        cloneMemberConstraints();
         setPackageRefs();
     }
     ~RandomizeMarkVisitor() override = default;
@@ -1311,6 +1327,9 @@ class ConstraintExprVisitor final : public VNVisitor {
     bool m_deferRandModeHoist = false;  // Wait for the complete struct member path
     std::set<std::string>& m_writtenVars;  // Track which variable paths have write_var generated
                                            // (shared across all constraints)
+    // Variables registered in new() of their class (user3() is also set by a member select
+    // registration, which does not register the variable for its own class)
+    std::set<const AstVar*>* const m_newWrittenVarsp;
     std::set<std::string> m_inlineWrittenVars;  // Per-instance tracking for inline constraints
     VInsertionSet<AstVar*>* m_sizeConstrainedArraysp = nullptr;  // Arrays with size constraints
     AstNodeExpr* m_conditionp = nullptr;  // Condition under which current expression is defined
@@ -2591,7 +2610,7 @@ class ConstraintExprVisitor final : public VNVisitor {
         const bool perClass = isGlobalConstrained || memberselp || isClassRefArray;
         const bool alreadyWritten = m_inlineInitBlockp ? m_inlineWrittenVars.count(smtName) > 0
                                     : perClass         ? m_writtenVars.count(smtName) > 0
-                                                       : varp->user3();
+                                                       : !m_newWrittenVarsp->insert(varp).second;
         const bool shouldWriteVar = !alreadyWritten;
         if (shouldWriteVar) {
             // Track this variable path as written
@@ -4357,7 +4376,8 @@ public:
                                    uint32_t* uniqueConstraintId, V3UniqueNames& uniqueNames,
                                    AstNodeFTask* memberselInitTaskp = nullptr,
                                    VInsertionSet<AstVar*>* sizeConstrainedArraysp = nullptr,
-                                   AstNodeFTask* prepareConstrainedArraysp = nullptr)
+                                   AstNodeFTask* prepareConstrainedArraysp = nullptr,
+                                   std::set<const AstVar*>* newWrittenVarsp = nullptr)
         : m_classp{classp}
         , m_inlineInitBlockp{inlineInitp}
         , m_memberselInitTaskp{memberselInitTaskp}
@@ -4365,6 +4385,7 @@ public:
         , m_randModeVarp{randModeVarp}
         , m_memberMap{memberMap}
         , m_writtenVars{writtenVars}
+        , m_newWrittenVarsp{newWrittenVarsp}
         , m_sizeConstrainedArraysp{sizeConstrainedArraysp}
         , m_prepareConstrainedArraysp{prepareConstrainedArraysp}
         , m_uniqueConstraintId{uniqueConstraintId}
@@ -4716,6 +4737,7 @@ class RandomizeVisitor final : public VNVisitor {
         m_constraintFuncCalls;  // Items of each constraint calling functions with random args
     std::map<const AstClass*, std::vector<AstClass*>> m_extendedBy;  // Directly derived classes
     std::unordered_set<const AstClass*> m_globalOwnerClassps;  // Classes solving sub-objects
+    std::set<const AstVar*> m_newWrittenVars;  // Variables registered in new() of their class
 
     // METHODS
     // Check if two nodes are semantically equivalent (not pointer equality):
@@ -7557,7 +7579,8 @@ class RandomizeVisitor final : public VNVisitor {
                 const ConstraintExprVisitor exprVisitor{
                     classp,        m_memberMap,  constrp->itemsp(), nullptr,
                     genp,          randModeVarp, m_writtenVars,     &m_uniqueConstraintId,
-                    m_uniqueNames, taskp,        &sizeArrays,       prepareArraysTaskp};
+                    m_uniqueNames, taskp,        &sizeArrays,       prepareArraysTaskp,
+                    &m_newWrittenVars};
                 if (constrp->itemsp()) skipInactiveElems(constrp);
                 std::vector<ConstraintFuncCall>& calls = m_constraintFuncCalls[constrp];
                 const std::vector<ConstraintFuncCall>& newCalls = exprVisitor.funcCalls();
