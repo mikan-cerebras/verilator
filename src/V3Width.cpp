@@ -346,8 +346,45 @@ class WidthVisitor final : public VNVisitor {
 
     StreamUse currentStreamUse() const { return m_vup ? m_vup->streamUse() : STREAM_USE_NONE; }
 
-    static void packIfUnpacked(AstNodeExpr* const nodep) {
-        if (AstUnpackArrayDType* const unpackDTypep = VN_CAST(nodep->dtypep(), UnpackArrayDType)) {
+    // Report a dynamically sized operand of a stream with several operands
+    static void warnDynamicStreamOperand(const AstNodeExpr* nodep) {
+        // Also an unpacked array of dynamically sized arrays
+        const AstNodeDType* elemDTypep = nodep->dtypep()->skipRefp();
+        while (const AstUnpackArrayDType* const adtypep = VN_CAST(elemDTypep, UnpackArrayDType)) {
+            elemDTypep = adtypep->subDTypep()->skipRefp();
+        }
+        if (elemDTypep->isDynamicallySized()) {
+            nodep->v3warn(E_UNSUPPORTED, "Unsupported: Streaming concatenation with multiple "
+                                         "operands, of which one is dynamically sized: "
+                                             << nodep->dtypep()->prettyDTypeNameQ());
+        }
+    }
+    void packIfUnpacked(AstNode* parentp, const char* side, AstNodeExpr* const nodep) {
+        AstNodeDType* const dtypep = nodep->dtypep()->skipRefp();
+        if (dtypep->containsUnpackedStruct()) {
+            // Stream the elements or members in order (IEEE 1800-2023 11.4.14)
+            FileLine* const flp = nodep->fileline();
+            AstNodeExpr* newp = nullptr;
+            const auto addTerm = [&](AstNodeExpr* termp) {
+                newp = newp ? new AstConcat{flp, newp, termp} : termp;
+            };
+            if (const AstUnpackArrayDType* const adtypep = VN_CAST(dtypep, UnpackArrayDType)) {
+                for (const int idx : adtypep->declRange().seqLeftToRight()) {
+                    addTerm(new AstSelBit{flp, nodep->cloneTreePure(false),
+                                          new AstConst{flp, AstConst::Signed32{}, idx}});
+                }
+            } else {
+                for (const AstMemberDType* itemp = VN_AS(dtypep, StructDType)->membersp(); itemp;
+                     itemp = VN_AS(itemp->nextp(), MemberDType)) {
+                    addTerm(new AstMemberSel{flp, nodep->cloneTreePure(false), VFlagChildDType{},
+                                             itemp->name()});
+                }
+            }
+            nodep->replaceWith(newp);
+            VL_DO_DANGLING(pushDeletep(nodep), nodep);
+            iterateCheckIntegralSelf(parentp, side, newp, SELF, BOTH);
+        } else if (AstUnpackArrayDType* const unpackDTypep
+                   = VN_CAST(nodep->dtypep(), UnpackArrayDType)) {
             const int elementsNum = unpackDTypep->arrayUnpackedElements();
             const int unpackMinBits = elementsNum * unpackDTypep->subDTypep()->widthMin();
             const int unpackBits = elementsNum * unpackDTypep->subDTypep()->width();
@@ -814,8 +851,10 @@ class WidthVisitor final : public VNVisitor {
                 iterateCheckIntegralSelf(nodep, "RHS", nodep->rhsp(), SELF, BOTH);
 
                 if (m_streamConcat) {
-                    packIfUnpacked(nodep->lhsp());
-                    packIfUnpacked(nodep->rhsp());
+                    warnDynamicStreamOperand(nodep->lhsp());
+                    warnDynamicStreamOperand(nodep->rhsp());
+                    packIfUnpacked(nodep, "LHS", nodep->lhsp());
+                    packIfUnpacked(nodep, "RHS", nodep->rhsp());
                 }
                 nodep->dtypeSetBitOrLogicUnsized(
                     nodep->lhsp()->width() + nodep->rhsp()->width(),
