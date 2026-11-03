@@ -14,6 +14,14 @@ class BasedB extends Base;
     return getNull ? null : b;
   endfunction
 endclass
+interface class Ia;
+endclass
+interface class Ib;
+endclass
+class Impl extends Base implements Ia, Ib;
+endclass
+class ImplA implements Ia;
+endclass
 
 module t;
   int i;
@@ -78,6 +86,69 @@ module t;
     if (i != 0) $stop;
     if (bao != ba) $stop;  // Unchanged
     void'($cast(bao, b));  // Ok as is function
+
+    // IEEE 1800-2023 8.26.5: Casts to or from interface classes are checked at runtime
+    begin
+      Impl impl;
+      ImplA impla;
+      Ia ia;
+      Ib ib;
+      impl = new;
+      ib = Ib'(impl);  // Static upcast to second implemented interface class
+      if (ib != impl) $stop;
+      ib = null;
+      i = $cast(ib, impl);
+      if (i != 1) $stop;
+      if (ib != impl) $stop;
+      ia = impl;
+      ib = null;
+      i = $cast(ib, ia);  // Interface class to interface class
+      if (i != 1) $stop;
+      if (ib != impl) $stop;
+      b = impl;
+      ia = null;
+      i = $cast(ia, b);  // Class to interface class implemented by derived class
+      if (i != 1) $stop;
+      if (ia != impl) $stop;
+      bo = null;
+      i = $cast(bo, ib);  // Interface class to class
+      if (i != 1) $stop;
+      if (bo != impl) $stop;
+      impla = new;
+      ia = impla;
+      ib = null;
+      i = $cast(ib, ia);
+      if (i != 0) $stop;
+      if (ib != null) $stop;
+      b = bb;
+      ia = null;
+      i = $cast(ia, b);
+      if (i != 0) $stop;
+      bo = bb;
+      i = $cast(bo, ia);  // Null source
+      if (i != 1) $stop;
+      if (bo != null) $stop;
+    end
+
+    begin
+      // A string and a real are never cast compatible (IEEE 1800-2023 6.24.1), so $cast fails
+      // and leaves the destination unchanged
+      typedef real real_t;
+      string s;
+      real_t r;
+      s = $sformatf("%0d.5", $time + 1);
+      r = 2.5;
+      i = -1;
+      i = $cast(r, s);
+      if (i != 0) $stop;
+      if (r != 2.5) $stop;
+      i = -1;
+      i = $cast(s, r);
+      if (i != 0) $stop;
+      if (s != "1.5") $stop;
+      void'($cast(s, r));
+      if (s != "1.5") $stop;
+    end
 
     $write("*-* All Finished *-*\n");
     $finish;
