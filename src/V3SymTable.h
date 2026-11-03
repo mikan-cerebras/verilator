@@ -184,24 +184,25 @@ public:
         }
     }
     VSymEnt* findIdFlat(const string& name) {
-        // Find identifier without looking upward through symbol hierarchy
-        // First, scan this begin/end block or module for the name
+        // Find identifier without looking upward through symbol hierarchy, as a reference.
         // Marks the entry referenced even if the lookup is not a reference, e.g. a duplicate
         // check, which only makes the wildcard export check (IEEE 1800-2023 26.6) more lenient
+        VSymEnt* const symp = findIdFlatNoRef(name);
+        if (symp) symp->m_referenced = true;
+        return symp;
+    }
+    // Find identifier without looking upward, and without marking it referenced
+    VSymEnt* findIdFlatNoRef(const string& name) {
+        // First, scan this begin/end block or module for the name
         const auto it = m_idNameMap.find(name);
         UINFO(9, "     SymFind   se"
                      << cvtToHex(this) << " '" << name << "' -> "
                      << (it == m_idNameMap.end() ? "NONE"
                                                  : "se" + cvtToHex(it->second)
                                                        + " n=" + cvtToHex(it->second->nodep())));
-        if (it != m_idNameMap.end()) {
-            it->second->m_referenced = true;
-            return it->second;
-        }
+        if (it != m_idNameMap.end()) return it->second;
         // Then import it from a wildcard imported package
-        VSymEnt* const symp = importWildCandidate(name);
-        if (symp) symp->m_referenced = true;
-        return symp;
+        return importWildCandidate(name);
     }
     // Whether name is, or on lookup would be, imported here through a wildcard import
     bool wildImportable(const string& name) const {
@@ -371,6 +372,12 @@ private:
                 symp->m_referenced
                     = !wildcard || (it != m_idNameMap.end() && it->second->m_referenced);
                 reinsert(name, symp);
+                // A wildcard export, unlike a named one, does not pick this package's item
+                if (wildcard) {
+                    for (const VSymEnt* const otherp : m_wildImportps) {
+                        checkWildImport(otherp, name, symp);
+                    }
+                }
                 return;
             }
         }

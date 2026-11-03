@@ -12,4 +12,8 @@ import p2::y;
 module sub;
   int a = x;
   int b = y;
+  int c = z;
 endmodule
+
+// A later declaration in $unit hides its wildcard imported name, also after a reference
+int z = 5;

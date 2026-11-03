@@ -83,6 +83,14 @@ module ok;
   int b = y;
 endmodule
 
+// Bad: a wildcard export does not pick one of the packages defining the name
+package pexp;
+  import p1::*;
+  import p2::*;
+  export p1::*;
+  int a = x;
+endpackage
+
 // Not conflicts: imports of a missing name, or of a name the package does not export
 module noimp;
   import p3::nope;
@@ -96,4 +104,5 @@ module t;
   late u_late ();
   ok u_ok ();
   noimp u_noimp ();
+  int pe = pexp::a;
 endmodule

@@ -65,11 +65,6 @@ package p5;
   export p1::*;
 endpackage
 
-// verilator lint_off IMPORTSTAR
-import p2::*;
-import p1::*;
-// verilator lint_on IMPORTSTAR
-
 module t;
   import p2::*;
   s_t ok_s;
@@ -107,8 +102,13 @@ module t_direct;
   initial $display("%0d", UNREF);  // Ok, also imported from p1
 endmodule
 
-module t_unit;
-  initial $display("%0d", UNREF);  // Ok, $unit also imports it from p1
+module t_expl;
+  import p2::w_t;
+  w_t bad_v;  // <--- Bad: p2 does not reference w_t, also when explicitly imported
+endmodule
+
+module t_scoped;
+  initial $display("%0d", p2::UNREF);  // Not checked, but not a reference by p2 either
 endmodule
 
 module top;
@@ -117,5 +117,6 @@ module top;
   t4 u4 ();
   t5 u5 ();
   t_direct u_direct ();
-  t_unit u_unit ();
+  t_expl u_expl ();
+  t_scoped u_scoped ();
 endmodule

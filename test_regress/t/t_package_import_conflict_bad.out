@@ -1,10 +1,13 @@
-%Error: t/t_package_import_conflict_bad.v:88:10: Import object not found: 'p3'
-   88 |   import p3::nope;
+%Error: t/t_package_import_conflict_bad.v:96:10: Import object not found: 'p3'
+   96 |   import p3::nope;
       |          ^~
         ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
 %Error: t/t_package_import_conflict_bad.v:89:10: Import object not exported by package: 'p4::y' (IEEE 1800-2023 26.6)
    89 |   import p4::y;
       |          ^~
+%Error: t/t_package_import_conflict_bad.v:91:11: Reference to 'x' is ambiguous, as wildcard imports of multiple packages define it (IEEE 1800-2023 26.3)
+   91 |   int a = x;
+      |           ^
 %Error: t/t_package_import_conflict_bad.v:70:11: Reference to 'y' makes a wildcard imported name visible, so a later declaration of the same name is illegal (IEEE 1800-2023 26.3)
    70 |   int a = y;
       |           ^

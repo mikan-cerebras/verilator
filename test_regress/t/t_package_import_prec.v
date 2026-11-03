@@ -17,6 +17,7 @@ endpackage
 package p2;
   int x = 2;
   int y = 2;
+  int z = 2;
 endpackage
 
 // Files share $unit, but may be separate compilation units (IEEE 1800-2023 3.12.1), so
@@ -39,6 +40,7 @@ module t;
   initial begin
     `checkd(x, 2);
     `checkd(y, 3);
+    `checkd(u_sub.c, 5);
     $write("*-* All Finished *-*\n");
     $finish;
   end
