@@ -1816,6 +1816,7 @@ void VlRandomizer::clearAll() {
     m_constraints.clear();
     m_softConstraints.clear();
     m_vars.clear();
+    m_enumDomains.clear();
     m_randcVarNames.clear();
     m_randcUsedValues.clear();
     m_randcConstraintHash = 0;

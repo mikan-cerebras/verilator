@@ -196,7 +196,11 @@ module t;
 
   class WideHolder;
     rand Wide m;
-    constraint c_w {m.w != W0;}
+    rand wide_e pw;
+    constraint c_w {
+      m.w != W0;
+      pw != W1;
+    }
     function new();
       m = new;
     endfunction
@@ -209,6 +213,30 @@ module t;
       ok = c.randomize();
       `checkd(ok, 1);
       `checkd(c.m.w inside {W1, W2}, 1);
+      `checkd(c.pw inside {W0, W2}, 1);
+    end
+  endtask
+
+  // An item with X/Z bits can't be produced, so it is not in the domain.
+  // Constrained, as basic randomization of such an enum is a separate issue.
+  typedef enum logic [1:0] {
+    F0 = 2'b00,
+    FX = 2'b1x,
+    F1 = 2'b01
+  } four_e;
+
+  class FourPlain;
+    rand four_e f;
+    constraint c_f {f != F0;}
+  endclass
+
+  task automatic testFourState;
+    FourPlain p = new;
+    int ok;
+    repeat (20) begin
+      ok = p.randomize();
+      `checkd(ok, 1);
+      `checkd(p.f, F1);
     end
   endtask
 
@@ -280,6 +308,7 @@ module t;
     testSolveBefore();
     testThreeLevels();
     testWide();
+    testFourState();
     testInlineWith();
     testNestedArray();
 

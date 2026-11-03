@@ -275,7 +275,7 @@ class VlRandomizer VL_NOT_FINAL {
     int m_index = 0;  // Internal counter for key generation
     std::set<std::string> m_randcVarNames;  // Names of randc variables for cyclic tracking
     // Enum domain per variable: a Bool SMT term over '__Ve', asserted for each element
-    std::map<std::string, std::string> m_enumDomains;
+    std::map<std::string, const char*> m_enumDomains;
     std::map<std::string, std::set<uint64_t>>
         m_randcUsedValues;  // Previously used values per randc var (exclusion-based cycling)
     size_t m_randcConstraintHash = 0;  // Hash of constraints when history was valid

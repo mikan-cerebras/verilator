@@ -8697,8 +8697,9 @@ public:
 
 // Restrict each solver variable of enum type, or array of enums, to the enum's values
 static void addEnumDomains(AstNetlist* nodep) {
-    // At each registration, so every form is covered: members reached through handles,
-    // array elements, and fields of object-array elements (IEEE 1800-2023 18.4)
+    // At each registration, after lowering, so registrations made or copied anywhere are
+    // covered: members reached through handles, elements of arrays, fields of object-array
+    // elements (IEEE 1800-2023 18.4). Enum fields of unpacked structs are not covered.
     std::vector<AstCMethodHard*> writeVarps;
     nodep->foreach([&](AstCMethodHard* const methodp) {
         if (methodp->method() == VCMethod::RANDOMIZER_WRITE_VAR) writeVarps.push_back(methodp);
@@ -8709,8 +8710,10 @@ static void addEnumDomains(AstNetlist* nodep) {
         if (!enumDtp) continue;
         std::string domain = "(or";
         for (const AstEnumItem* const itemp : enumDtp->itemspList()) {
-            domain += " (= __Ve (_ bv" + VN_AS(itemp->valuep(), Const)->num().toDecimalU() + " "
-                      + cvtToStr(enumDtp->width()) + "))";
+            const V3Number& num = VN_AS(itemp->valuep(), Const)->num();
+            if (num.isFourState()) continue;  // The solver can't produce X/Z
+            domain
+                += " (= __Ve (_ bv" + num.toDecimalU() + " " + cvtToStr(enumDtp->width()) + "))";
         }
         domain += ")";
         FileLine* const fl = writeVarp->fileline();
