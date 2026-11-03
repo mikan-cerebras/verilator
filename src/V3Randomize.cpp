@@ -646,11 +646,11 @@ class RandomizeMarkVisitor final : public VNVisitor {
     }
     // Whether the objects on the path to cloned constraints include one of class classp
     static bool classOnPath(const AstClass* classp, const AstVarRef* rootVarRefp,
-                            const std::vector<AstVar*>& path) {
+                            const std::vector<AstVar*>& path, const AstClass* targetClassp) {
         // Rand handles may form a cycle (IEEE 1800-2023 18.4 does not forbid it), so the
         // constraints of objects reached again through the cycle are not cloned, which
         // would not terminate
-        if (classp == handleClassp(rootVarRefp->varp())) return true;
+        if (classp == targetClassp || classp == handleClassp(rootVarRefp->varp())) return true;
         for (const AstVar* const varp : path) {
             if (classp == handleClassp(varp)) return true;
         }
@@ -678,7 +678,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
             }
 
             AstClass* nestedClassp = memberClassRefp->classp();
-            if (classOnPath(nestedClassp, rootVarRefp, pathToClass)) return;
+            if (classOnPath(nestedClassp, rootVarRefp, pathToClass, targetClassp)) return;
 
             // Replace all variable references inside the cloned constraint with proper
             // member selections
@@ -4344,6 +4344,8 @@ class RandomizeVisitor final : public VNVisitor {
 
     // STATE
     V3UniqueNames m_inlineUniqueNames;  // For generating unique function names
+    std::map<const AstClass*, std::vector<AstClass*>>
+        m_classFamilies;  // Base-most class -> classes derived from it, and itself
     // Constraints cloned from objects -> the object (or object array) they were cloned for
     const std::map<const AstConstraint*, AstNodeExpr*>& m_cloneObjps;
     V3UniqueNames m_randArrayUniqueNames{"__Vrandarr"};  // Random array loop indices
@@ -5273,11 +5275,26 @@ class RandomizeVisitor final : public VNVisitor {
             if (!stmtsp) return;
 
             // Wrap in null check
-            AstIf* const nullCheckp = new AstIf{
-                fl,
-                new AstNeq{fl, new AstVarRef{fl, ownerClassp, memberVarp, VAccess::READ},
-                           new AstConst{fl, AstConst::Null{}}},
-                stmtsp};
+            AstNodeExpr* condp
+                = new AstNeq{fl, new AstVarRef{fl, ownerClassp, memberVarp, VAccess::READ},
+                             new AstConst{fl, AstConst::Null{}}};
+            // Each object of a cycle is reached once, while flagged as being randomized
+            if (inRandHandleCycle(memberVarp, classp)) {
+                condp
+                    = new AstLogAnd{fl, condp,
+                                    new AstNot{fl, newRandomizingSelp(fl, ownerClassp, memberVarp,
+                                                                      VAccess::READ)}};
+                AstNode* const setp = new AstAssign{
+                    fl, newRandomizingSelp(fl, ownerClassp, memberVarp, VAccess::WRITE),
+                    new AstConst{fl, AstConst::BitTrue{}}};
+                stmtsp = AstNode::addNext(setp, stmtsp);
+                stmtsp = AstNode::addNext(
+                    stmtsp,
+                    new AstAssign{fl,
+                                  newRandomizingSelp(fl, ownerClassp, memberVarp, VAccess::WRITE),
+                                  new AstConst{fl, AstConst::BitFalse{}}});
+            }
+            AstIf* const nullCheckp = new AstIf{fl, condp, stmtsp};
 
             // Wrap in rand_mode check
             callbackTaskp->addStmtsp(wrapIfRandMode(classp, memberVarp, nullCheckp));
@@ -5541,6 +5558,66 @@ class RandomizeVisitor final : public VNVisitor {
         }
     }
 
+    // Whether an object of classp may reach one of targetp through rand handles
+    bool reachesByRandHandle(AstClass* classp, AstClass* targetp,
+                             std::set<const AstClass*>& visited) {
+        // A handle may hold an object of a derived class, so a class stands for all classes
+        // with its base-most class. Visits each once; called per class handle member of a
+        // randomized class, which is quadratic only in the number of such classes.
+        AstClass* const rootp = classp->baseMostClassp();
+        if (rootp == targetp->baseMostClassp()) return true;
+        if (!visited.insert(rootp).second) return false;
+        for (const AstClass* const familyp : m_classFamilies[rootp]) {
+            if (familyp->existsMember([&](const AstClass*, const AstVar* varp) {
+                    const AstClassRefDType* const classRefp
+                        = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
+                    return varp->rand().isRandomizable() && classRefp
+                           && reachesByRandHandle(classRefp->classp(), targetp, visited);
+                })) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Whether rand handle varp of classp is part of a cycle of rand handles
+    bool inRandHandleCycle(const AstVar* varp, AstClass* classp) {
+        const AstClassRefDType* const classRefp
+            = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
+        std::set<const AstClass*> visited;
+        return varp->rand().isRandomizable() && classRefp
+               && reachesByRandHandle(classRefp->classp(), classp, visited);
+    }
+    // The being-randomized flag of the objects of classp if on a cycle of rand handles
+    AstVar* getRandomizingVarIfCycle(AstClass* classp) {
+        const bool inCycle = classp->existsMember(
+            [&](const AstClass*, const AstVar* varp) { return inRandHandleCycle(varp, classp); });
+        return inCycle ? getCreateRandomizingVar(classp) : nullptr;
+    }
+    // Get or create the flag of an object of classp being randomized
+    AstVar* getCreateRandomizingVar(AstClass* classp) {
+        // In the base-most class, so the same flag for every class of the object
+        classp = classp->baseMostClassp();
+        static constexpr const char* const name = "__Vrandomizing";
+        if (AstVar* const varp = VN_CAST(m_memberMap.findMember(classp, name), Var)) return varp;
+        AstVar* const varp
+            = new AstVar{classp->fileline(), VVarType::MEMBER, name, classp->findBitDType()};
+        varp->user2p(classp);
+        classp->addMembersp(varp);
+        m_memberMap.insert(classp, varp);
+        return varp;
+    }
+    // Reference to the being-randomized flag of the object of rand handle varp
+    AstMemberSel* newRandomizingSelp(FileLine* fl, AstClass* ownerClassp, AstVar* varp,
+                                     const VAccess& access) {
+        AstClass* const memberClassp = VN_AS(varp->dtypep()->skipRefp(), ClassRefDType)->classp();
+        AstVar* const flagVarp = getCreateRandomizingVar(memberClassp);
+        AstMemberSel* const selp
+            = new AstMemberSel{fl, new AstVarRef{fl, ownerClassp, varp, VAccess::READ}, flagVarp};
+        selp->access(access);
+        return selp;
+    }
+
     void addBasicRandomizeBody(AstFunc* const basicRandomizep, AstClass* const nodep,
                                AstVar* randModeVarp) {
         UINFO(9, "addBasicRTB " << nodep);
@@ -5573,30 +5650,39 @@ class RandomizeVisitor final : public VNVisitor {
                                        "type of the containing class");
                     return;
                 }
+                // An object reached through a cycle of rand handles may need its own
+                // constraints, which global constraints do not clone around the cycle
+                const bool inCycle = inRandHandleCycle(memberVarp, nodep);
+                const bool basicOnly = memberVarp->globalConstrained() && !inCycle;
                 AstFunc* const memberFuncp
-                    = memberVarp->globalConstrained()
-                          ? V3Randomize::newRandomizeFunc(m_memberMap, classRefp->classp(),
-                                                          BASIC_RANDOMIZE_FUNC_NAME)
-                          : V3Randomize::newRandomizeFunc(m_memberMap, classRefp->classp());
+                    = basicOnly ? V3Randomize::newRandomizeFunc(m_memberMap, classRefp->classp(),
+                                                                BASIC_RANDOMIZE_FUNC_NAME)
+                                : V3Randomize::newRandomizeFunc(m_memberMap, classRefp->classp());
                 AstMethodCall* const callp
-                    = memberVarp->globalConstrained()
-                          ? new AstMethodCall{fl,
-                                              new AstVarRef{fl, classp, memberVarp,
-                                                            VAccess::WRITE},
-                                              BASIC_RANDOMIZE_FUNC_NAME}
-                          : new AstMethodCall{
-                                fl, new AstVarRef{fl, classp, memberVarp, VAccess::WRITE},
-                                "randomize"};
+                    = basicOnly ? new AstMethodCall{fl,
+                                                    new AstVarRef{fl, classp, memberVarp,
+                                                                  VAccess::WRITE},
+                                                    BASIC_RANDOMIZE_FUNC_NAME}
+                                : new AstMethodCall{
+                                      fl, new AstVarRef{fl, classp, memberVarp, VAccess::WRITE},
+                                      "randomize"};
                 callp->taskp(memberFuncp);
                 callp->dtypeFrom(memberFuncp);
                 AstVarRef* const basicFvarRefReadp = basicFvarRefp->cloneTree(false);
                 basicFvarRefReadp->access(VAccess::READ);
-                AstIf* const assignIfNotNullp = new AstIf{
-                    fl,
-                    new AstNeq{fl, new AstVarRef{fl, classp, memberVarp, VAccess::READ},
-                               new AstConst{fl, AstConst::Null{}}},
-                    new AstAssign{fl, basicFvarRefp->cloneTree(false),
-                                  new AstAnd{fl, basicFvarRefReadp, callp}}};
+                AstNodeExpr* condp
+                    = new AstNeq{fl, new AstVarRef{fl, classp, memberVarp, VAccess::READ},
+                                 new AstConst{fl, AstConst::Null{}}};
+                // Each object of a cycle is randomized once per call
+                if (inCycle) {
+                    condp = new AstLogAnd{
+                        fl, condp,
+                        new AstNot{fl, newRandomizingSelp(fl, classp, memberVarp, VAccess::READ)}};
+                }
+                AstIf* const assignIfNotNullp
+                    = new AstIf{fl, condp,
+                                new AstAssign{fl, basicFvarRefp->cloneTree(false),
+                                              new AstAnd{fl, basicFvarRefReadp, callp}}};
                 basicRandomizep->addStmtsp(wrapIfRandMode(nodep, memberVarp, assignIfNotNullp));
             } else {
                 AstVar* const randcVarp = newRandcVarsp(memberVarp, nodep);
@@ -6704,6 +6790,8 @@ class RandomizeVisitor final : public VNVisitor {
 
         iterateChildren(nodep);
         if (!nodep->user1()) return;  // Doesn't need randomize, or already processed
+        // Also while being processed, as rand objects of a cycle visit each other
+        nodep->user1(false);
         UINFO(9, "Define randomize() for " << nodep);
         nodep->baseMostClassp()->needRNG(true);
 
@@ -6715,6 +6803,16 @@ class RandomizeVisitor final : public VNVisitor {
         AstFunc* const randomizep = V3Randomize::newRandomizeFunc(m_memberMap, nodep);
         AstVar* const fvarp = VN_AS(randomizep->fvarp(), Var);
         AstVar* const randModeVarp = getRandModeVarFromClass(nodep);
+        // An object of a cycle of rand handles is flagged while randomized, so it is not
+        // randomized again through the cycle
+        AstVar* const randomizingVarp = getRandomizingVarIfCycle(nodep);
+        if (randomizingVarp) {
+            randomizep->addStmtsp(
+                new AstAssign{fl,
+                              new AstVarRef{fl, VN_AS(randomizingVarp->user2p(), NodeModule),
+                                            randomizingVarp, VAccess::WRITE},
+                              new AstConst{fl, AstConst::BitTrue{}}});
+        }
         addPrePostCall(nodep, randomizep, "pre_randomize");
 
         // Call nested pre_randomize on rand class-type members (IEEE 18.4.1)
@@ -6950,7 +7048,13 @@ class RandomizeVisitor final : public VNVisitor {
         }
 
         addPrePostCall(nodep, randomizep, "post_randomize");
-        nodep->user1(false);
+        if (randomizingVarp) {
+            randomizep->addStmtsp(
+                new AstAssign{fl,
+                              new AstVarRef{fl, VN_AS(randomizingVarp->user2p(), NodeModule),
+                                            randomizingVarp, VAccess::WRITE},
+                              new AstConst{fl, AstConst::BitFalse{}}});
+        }
     }
     void visit(AstRandCase* nodep) override {
         // RANDCASE
@@ -7264,6 +7368,15 @@ class RandomizeVisitor final : public VNVisitor {
 
         AstFunc* const randomizeFuncp = V3Randomize::newRandomizeFunc(
             m_memberMap, classp, m_inlineUniqueNames.get(nodep), false);
+        // As for randomize()
+        AstVar* const randomizingVarp = getRandomizingVarIfCycle(classp);
+        if (randomizingVarp) {
+            randomizeFuncp->addStmtsp(new AstAssign{
+                nodep->fileline(),
+                new AstVarRef{nodep->fileline(), VN_AS(randomizingVarp->user2p(), NodeModule),
+                              randomizingVarp, VAccess::WRITE},
+                new AstConst{nodep->fileline(), AstConst::BitTrue{}}});
+        }
 
         // A base-handle `randomize() with` must still reach a derived
         // pre/post_randomize. Route them through per-class virtual wrappers
@@ -7653,6 +7766,13 @@ class RandomizeVisitor final : public VNVisitor {
         } else {
             addPrePostCall(classp, randomizeFuncp, "post_randomize");
         }
+        if (randomizingVarp) {
+            randomizeFuncp->addStmtsp(new AstAssign{
+                nodep->fileline(),
+                new AstVarRef{nodep->fileline(), VN_AS(randomizingVarp->user2p(), NodeModule),
+                              randomizingVarp, VAccess::WRITE},
+                new AstConst{nodep->fileline(), AstConst::BitFalse{}}});
+        }
 
         // Replace the node with a call to that function
         nodep->name(randomizeFuncp->name());
@@ -7737,6 +7857,9 @@ public:
                      const std::map<const AstConstraint*, AstNodeExpr*>& cloneObjps)
         : m_inlineUniqueNames{"__Vrandwith"}
         , m_cloneObjps{cloneObjps} {
+        nodep->foreach([&](AstClass* const classp) {
+            m_classFamilies[classp->baseMostClassp()].push_back(classp);
+        });
         createRandomizeClassVars(nodep);
         // Flag local constraint leaves as solver-owned so __VBasicRand skips them.
         // Runs before any class is lowered. Only a randomized class counts, and
