@@ -9121,6 +9121,15 @@ class WidthVisitor final : public VNVisitor {
                 }
                 // An untyped formal preserves the actual argument's self-determined type.
                 if (portp->basicp() && portp->basicp()->untyped()) {
+                    if (pinp->isDouble()) {
+                        // The property body is typed only once, for integral arguments
+                        pinp->v3warn(E_UNSUPPORTED,
+                                     "Unsupported: real argument for untyped formal "
+                                         << portp->prettyNameQ());
+                        pinp->replaceWith(new AstConst{pinp->fileline(), AstConst::BitFalse{}});
+                        VL_DO_DANGLING(pushDeletep(pinp), pinp);
+                        continue;
+                    }
                     iterateCheckSelf(nodep, "Function Argument", pinp, SELF, FINAL);
                 } else if (!portp->basicp() || portp->basicp()->isOpaque()) {
                     // Output args: at return caller = callee, reverse direction.
