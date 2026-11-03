@@ -274,6 +274,8 @@ class VlRandomizer VL_NOT_FINAL {
     std::unordered_set<std::string> m_staticVars;  // Names of static rand vars
     int m_index = 0;  // Internal counter for key generation
     std::set<std::string> m_randcVarNames;  // Names of randc variables for cyclic tracking
+    // Enum domain per variable: a Bool SMT term over '__Ve', asserted for each element
+    std::map<std::string, std::string> m_enumDomains;
     std::map<std::string, std::set<uint64_t>>
         m_randcUsedValues;  // Previously used values per randc var (exclusion-based cycling)
     size_t m_randcConstraintHash = 0;  // Hash of constraints when history was valid
@@ -987,6 +989,9 @@ public:
     // Whether the function argument variables are solved, so the call can be evaluated
     bool func_args_ready(std::initializer_list<const char*> names) const;
     void markRandc(const std::string& name);  // Mark variable as randc for cyclic tracking
+    void enum_domain(const std::string& name, const char* domain) {  // Restrict to enum values
+        m_enumDomains[name] = domain;
+    }
     void solveBefore(const std::string& beforeName,
                      const std::string& afterName);  // Register solve-before ordering
     void set_randmode(const VlQueue<CData>& randmode) { m_randmodep = &randmode; }
