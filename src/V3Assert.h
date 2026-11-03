@@ -41,8 +41,10 @@ public:
     // elaboration-time constants (IEEE 1800-2023 16.7). If not, report it on errp, and replace
     // them with constants, so later steps do not fail after the error.
     static void checkSvaCycleDelay(AstDelay* nodep, AstNode* errp) VL_MT_DISABLED;
-    // Fold and check the counts of a repetition (IEEE 1800-2023 16.9.2), reporting errors on errp
-    static void checkSvaRepetition(AstSConsRep* nodep, AstNode* errp) VL_MT_DISABLED;
+    // Fold and check the counts of a repetition (IEEE 1800-2023 16.9.2), reporting errors on errp;
+    // emptyOk if the caller reduces a repetition that only matches empty
+    static void checkSvaRepetition(AstSConsRep* nodep, AstNode* errp,
+                                   bool emptyOk = false) VL_MT_DISABLED;
     static void checkSvaRepetition(AstSGotoRep* nodep, AstNode* errp) VL_MT_DISABLED;
     static void checkSvaRepetition(AstSNonConsRep* nodep, AstNode* errp) VL_MT_DISABLED;
     // Fold and check the tick count of a $past (IEEE 1800-2023 16.9.3), reporting errors on errp
@@ -72,6 +74,8 @@ public:
     static void lowerSvaLocalVarInits(
         AstProperty* propp, AstPropSpec* bodyp,
         const std::unordered_map<const AstVar*, AstVar*>& localVarMap) VL_MT_DISABLED;
+    // Reduce a whole property 'always p' to p
+    static void reducePlainAlways(AstPropSpec* specp) VL_MT_DISABLED;
 };
 
 class V3Assert final {
