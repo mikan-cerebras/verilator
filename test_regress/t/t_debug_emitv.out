@@ -1610,7 +1610,7 @@ package std;
             string s;
             begin : label11
                 get_randstate = /*CRESET*/;
-                s = (string'($c(0)));
+                s = string'($c(0));
                 $c(s = m_process->randstate(););
                 get_randstate = s;
                 disable label11;
