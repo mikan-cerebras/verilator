@@ -301,6 +301,7 @@ class WidthVisitor final : public VNVisitor {
     AstNodeFTask* m_ftaskp = nullptr;  // Current function/task
     AstNodeModule* m_modep = nullptr;  // Current module
     const AstConstraint* m_constraintp = nullptr;  // Current constraint
+    bool m_inConstraintExpr = false;  // Under a class or inline ('with') constraint expression
     AstNodeProcedure* m_procedurep = nullptr;  // Current final/always
     const AstNode* m_writerp = nullptr;  // Assignment, pin, alias, etc. whose lvalue is iterated
     const AstWith* m_withp = nullptr;  // Current 'with' statement
@@ -3575,6 +3576,8 @@ class WidthVisitor final : public VNVisitor {
         userIterateAndNext(nodep->rhssp(), WidthVP{SELF, BOTH}.p());
     }
     void visit(AstConstraintExpr* nodep) override {
+        VL_RESTORER(m_inConstraintExpr);
+        m_inConstraintExpr = true;
         userIterateAndNext(nodep->exprp(), WidthVP{SELF, BOTH}.p());
     }
     void visit(AstConstraintUnique* nodep) override {
@@ -3985,10 +3988,32 @@ class WidthVisitor final : public VNVisitor {
     }
     void visit(AstNodeCons* nodep) override {}  // Widthed when created
     void visit(AstNodeConsItem* nodep) override {}  // Widthed when created
+    void replaceDistUnbounded(AstNodeExpr* boundp, const AstNodeExpr* exprp, bool upper) {
+        if (!VN_IS(boundp, Unbounded)) return;
+        V3Number num{boundp, exprp->width(), 0};
+        if (upper) num.setAllBits1();
+        if (exprp->isSigned()) {
+            num.setBit(exprp->width() - 1, !upper);
+            num.isSigned(true);
+        }
+        boundp->replaceWith(new AstConst{boundp->fileline(), num});
+        VL_DO_DANGLING(pushDeletep(boundp), boundp);
+    }
     void visit(AstDist* nodep) override {
         //  x dist {a :/ p, b :/ q} --> (p > 0 && x == a) || (q > 0 && x == b)
         // (only outside constraints; inside constraints V3Randomize handles weighted selection)
         userIterateAndNext(nodep->exprp(), WidthVP{CONTEXT_DET, PRELIM}.p());
+        // V3Randomize lowers a constraint dist to range comparisons and picks, which need
+        // concrete bounds, so replace '$' by the lowest or highest value of the type of the
+        // dist expression (IEEE 1800-2023 18.5.3, 11.4.13)
+        if (m_inConstraintExpr && nodep->exprp()->dtypep()->skipRefp()->isIntegralOrPacked()) {
+            for (AstDistItem* const itemp : nodep->itemspList()) {
+                if (AstInsideRange* const irp = VN_CAST(itemp->rangep(), InsideRange)) {
+                    replaceDistUnbounded(irp->lhsp(), nodep->exprp(), false);
+                    replaceDistUnbounded(irp->rhsp(), nodep->exprp(), true);
+                }
+            }
+        }
         for (AstNode* const itemp : nodep->itemspList()) {
             VL_DO_DANGLING(userIterate(itemp, WidthVP{CONTEXT_DET, PRELIM}.p()), itemp);
         }
@@ -4031,7 +4056,7 @@ class WidthVisitor final : public VNVisitor {
         // Inside a constraint, V3Randomize handles dist lowering with proper weights,
         // but only for simple scalar/range items. Container-type items (queues, arrays)
         // must be lowered here via insideItem() which knows how to expand them.
-        if (m_constraintp) {
+        if (m_inConstraintExpr) {
             bool canLower = true;
             for (AstDistItem* const ditemp : nodep->itemspList()) {
                 if (VN_IS(ditemp->rangep(), InsideRange)) continue;

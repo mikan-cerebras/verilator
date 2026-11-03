@@ -5629,9 +5629,12 @@ class RandomizeVisitor final : public VNVisitor {
         return new AstConstraintIf{fl, condp, thenBodyp, nullptr};
     }
 
+    // A variable the solver draws: rand, or a std::randomize() argument
+    static bool isSolvedVar(const AstVar* varp) {
+        return varp->rand().isRandomizable() || varp->isStdRandomizeArg();
+    }
     static bool distBoundRefsRandVar(const AstNode* boundp) {
-        return boundp->exists(
-            [](const AstVarRef* vrefp) { return vrefp->varp()->rand().isRandomizable(); });
+        return boundp->exists([](const AstVarRef* vrefp) { return isSolvedVar(vrefp->varp()); });
     }
 
     static bool distBoundRefsModeVar(const AstNode* boundp) {
@@ -5667,6 +5670,37 @@ class RandomizeVisitor final : public VNVisitor {
         return andp;
     }
 
+    // Number of values in the range, as a 64-bit expression (0 for all 2^64 values)
+    static AstNodeExpr* newDistRangeSize(FileLine* fl, const AstInsideRange* irp) {
+        const bool isSigned = irp->lhsp()->isSigned();
+        const AstConst* const lopCp = VN_CAST(irp->lhsp(), Const);
+        const AstConst* const hipCp = VN_CAST(irp->rhsp(), Const);
+        if (lopCp && hipCp && lopCp->num().mostSetBitP1() <= 64
+            && hipCp->num().mostSetBitP1() <= 64) {
+            // Bounds wider than 64 bits are non-negative here
+            const bool sext = isSigned && lopCp->width() <= 64;
+            const uint64_t lo = sext ? lopCp->num().toSQuad() : lopCp->toUQuad();
+            const uint64_t hi = sext ? hipCp->num().toSQuad() : hipCp->toUQuad();
+            return new AstConst{fl, AstConst::Unsized64{}, hi - lo + 1};
+        }
+        if (irp->lhsp()->width() > 64 || irp->rhsp()->width() > 64) {
+            irp->v3warn(E_UNSUPPORTED, "Unsupported: dist range bound wider than 64 bits");
+            return new AstConst{fl, AstConst::Unsized64{}, 1};
+        }
+        AstNodeExpr* const lo64p
+            = isSigned ? static_cast<AstNodeExpr*>(
+                             new AstExtendS{fl, irp->lhsp()->cloneTreePure(false), 64})
+                       : static_cast<AstNodeExpr*>(
+                             new AstExtend{fl, irp->lhsp()->cloneTreePure(false), 64});
+        AstNodeExpr* const hi64p
+            = isSigned ? static_cast<AstNodeExpr*>(
+                             new AstExtendS{fl, irp->rhsp()->cloneTreePure(false), 64})
+                       : static_cast<AstNodeExpr*>(
+                             new AstExtend{fl, irp->rhsp()->cloneTreePure(false), 64});
+        return new AstAdd{fl, new AstConst{fl, AstConst::Unsized64{}, 1ULL},
+                          new AstSub{fl, hi64p, lo64p}};
+    }
+
     struct DistBucket final {
         AstNodeExpr* rangep;  // A single value or an InsideRange
         AstNodeExpr* weightExprp;  // Effective 64-bit weight (range weight scaled by size)
@@ -5685,20 +5719,14 @@ class RandomizeVisitor final : public VNVisitor {
             // := on a range weights every element, so scale by the range size.
             if (!ditemp->isWhole()) {
                 if (const AstInsideRange* const irp = VN_CAST(ditemp->rangep(), InsideRange)) {
-                    const AstConst* const lop = VN_CAST(irp->lhsp(), Const);
-                    const AstConst* const hip = VN_CAST(irp->rhsp(), Const);
-                    AstNodeExpr* rangeSizep;
-                    if (lop && hip) {
-                        const uint64_t rangeSize = hip->toUQuad() - lop->toUQuad() + 1;
-                        rangeSizep = new AstConst{fl, AstConst::Unsized64{}, rangeSize};
-                    } else {
-                        rangeSizep = new AstAdd{
-                            fl, new AstConst{fl, AstConst::Unsized64{}, 1},
-                            new AstSub{fl,
-                                       new AstExtend{fl, irp->rhsp()->cloneTreePure(false), 64},
-                                       new AstExtend{fl, irp->lhsp()->cloneTreePure(false), 64}}};
+                    AstNodeExpr* sizep = newDistRangeSize(fl, irp);
+                    if (VN_IS(sizep, Const) && VN_AS(sizep, Const)->isZero()) {
+                        // All 2^64 values, saturate
+                        VL_DO_DANGLING(pushDeletep(sizep), sizep);
+                        sizep = new AstConst{fl, AstConst::Unsized64{},
+                                             std::numeric_limits<uint64_t>::max()};
                     }
-                    weightExprp = new AstMul{fl, weightExprp, rangeSizep};
+                    weightExprp = new AstMul{fl, weightExprp, sizep};
                 }
             }
             buckets.push_back({ditemp->rangep(), weightExprp});
@@ -5791,9 +5819,7 @@ class RandomizeVisitor final : public VNVisitor {
     // A non-rand value can never be re-drawn; a non-rand owner level is skipped.
     AstNodeExpr* newVarGate(AstVar* varp, const AstMemberSel* mselp, bool ownerLevel,
                             AstVar* randModeVarp, FileLine* fl) {
-        if (!varp->rand().isRandomizable()) {
-            return new AstConst{fl, AstConst::BitTrue{}, ownerLevel};
-        }
+        if (!isSolvedVar(varp)) return new AstConst{fl, AstConst::BitTrue{}, ownerLevel};
         const RandomizeMode rmode = {.asUQuad = varp->user1()};
         if (!rmode.usesMode) return new AstConst{fl, AstConst::BitTrue{}};
         return newModeBitRead(varp, mselp, randModeVarp, fl);
@@ -5921,31 +5947,16 @@ class RandomizeVisitor final : public VNVisitor {
         AstNodeExpr* const distExprCopyp = distp->exprp()->cloneTreePure(false);
         distExprCopyp->user1(true);
         const int distWidth = distp->exprp()->width();
-        const AstConst* const lopCp = VN_CAST(irp->lhsp(), Const);
-        const AstConst* const hipCp = VN_CAST(irp->rhsp(), Const);
-        AstNodeExpr* rangeSzp;
-        if (lopCp && hipCp) {
-            const uint64_t rsz = hipCp->toUQuad() - lopCp->toUQuad() + 1;
-            rangeSzp = new AstConst{fl, AstConst::Unsized64{}, rsz};
+        AstNodeExpr* const rangeSzp = newDistRangeSize(fl, irp);
+        AstNodeExpr* offsetp = new AstRand{fl, nullptr, false};
+        offsetp->dtypeSetUInt64();
+        if (VN_IS(rangeSzp, Const) && VN_AS(rangeSzp, Const)->isZero()) {
+            // All 2^64 values, any random value is in the range
+            VL_DO_DANGLING(pushDeletep(rangeSzp), rangeSzp);
         } else {
-            const bool isSigned = irp->lhsp()->isSigned();
-            AstNodeExpr* const lo64p
-                = isSigned ? static_cast<AstNodeExpr*>(
-                                 new AstExtendS{fl, irp->lhsp()->cloneTreePure(false), 64})
-                           : static_cast<AstNodeExpr*>(
-                                 new AstExtend{fl, irp->lhsp()->cloneTreePure(false), 64});
-            AstNodeExpr* const hi64p
-                = isSigned ? static_cast<AstNodeExpr*>(
-                                 new AstExtendS{fl, irp->rhsp()->cloneTreePure(false), 64})
-                           : static_cast<AstNodeExpr*>(
-                                 new AstExtend{fl, irp->rhsp()->cloneTreePure(false), 64});
-            rangeSzp = new AstAdd{fl, new AstConst{fl, AstConst::Unsized64{}, 1ULL},
-                                  new AstSub{fl, hi64p, lo64p}};
+            offsetp = new AstModDiv{fl, offsetp, rangeSzp};
         }
-        AstNodeExpr* const rand64p = new AstRand{fl, nullptr, false};
-        rand64p->dtypeSetUInt64();
-        AstNodeExpr* const offsetp
-            = new AstCCast{fl, new AstModDiv{fl, rand64p, rangeSzp}, distWidth};
+        offsetp = new AstCCast{fl, offsetp, distWidth};
         AstNodeExpr* const valuep = new AstAdd{fl, irp->lhsp()->cloneTreePure(false), offsetp};
         AstNodeExpr* const eqp = new AstEq{fl, distExprCopyp, valuep};
         eqp->user1(true);
@@ -5989,7 +6000,7 @@ class RandomizeVisitor final : public VNVisitor {
 
     // Replace AstDist with weighted bucket selection via AstConstraintIf chain.
     // Supports both constant and variable weight expressions.
-    void lowerDistConstraints(AstTask* taskp, AstNode* constrItemsp, AstVar* randModeVarp,
+    void lowerDistConstraints(AstNodeFTask* taskp, AstNode* constrItemsp, AstVar* randModeVarp,
                               AstConstraintForeach* foreachp = nullptr) {
         // When inside a foreach, bucket preamble stmts are stored in foreachp->user3p()
         // (as a linked list) so visit(AstConstraintForeach*) can inject them into the
@@ -6865,9 +6876,10 @@ class RandomizeVisitor final : public VNVisitor {
                     randomizeFuncp->addStmtsp(
                         implementConstraintsClearAll(randomizeFuncp->fileline(), stdrandp));
                 }
-                AstNode* const capturedTreep = withp->exprp()->unlinkFrBackWithNext();
-                AstBegin* const setupBlockp
-                    = new AstBegin{fl, "__Vsetup_constraints", capturedTreep, true};
+                AstBegin* const setupBlockp = new AstBegin{
+                    fl, "__Vsetup_constraints", withp->exprp()->unlinkFrBackWithNext(), true};
+                lowerDistConstraints(randomizeFuncp, setupBlockp->stmtsp(), nullptr);
+                AstNode* const capturedTreep = setupBlockp->stmtsp();
                 randomizeFuncp->addStmtsp(setupBlockp);
                 {
                     expandUniqueElementList(capturedTreep);
@@ -7010,9 +7022,11 @@ class RandomizeVisitor final : public VNVisitor {
         }
 
         // Generate constraint setup code and a hardcoded call to the solver
-        AstNode* const capturedTreep = withp->exprp()->unlinkFrBackWithNext();
-        AstBegin* const setupBlockp
-            = new AstBegin{nodep->fileline(), "__Vsetup_constraints", capturedTreep, true};
+        AstBegin* const setupBlockp = new AstBegin{nodep->fileline(), "__Vsetup_constraints",
+                                                   withp->exprp()->unlinkFrBackWithNext(), true};
+        // Dist bucket draws go into the function, ahead of the constraints reading them
+        lowerDistConstraints(randomizeFuncp, setupBlockp->stmtsp(), randModeVarp);
+        AstNode* const capturedTreep = setupBlockp->stmtsp();
         randomizeFuncp->addStmtsp(setupBlockp);
 
         // Pre-scan captured tree for .size on dynamic/assoc arrays and replace
