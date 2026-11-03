@@ -5580,9 +5580,12 @@ class RandomizeVisitor final : public VNVisitor {
         return new AstConstraintIf{fl, condp, thenBodyp, nullptr};
     }
 
+    // A variable the solver draws: rand, or a std::randomize() argument
+    static bool isSolvedVar(const AstVar* varp) {
+        return varp->rand().isRandomizable() || varp->isStdRandomizeArg();
+    }
     static bool distBoundRefsRandVar(const AstNode* boundp) {
-        return boundp->exists(
-            [](const AstVarRef* vrefp) { return vrefp->varp()->rand().isRandomizable(); });
+        return boundp->exists([](const AstVarRef* vrefp) { return isSolvedVar(vrefp->varp()); });
     }
 
     static bool distBoundRefsModeVar(const AstNode* boundp) {
@@ -5767,9 +5770,7 @@ class RandomizeVisitor final : public VNVisitor {
     // A non-rand value can never be re-drawn; a non-rand owner level is skipped.
     AstNodeExpr* newVarGate(AstVar* varp, const AstMemberSel* mselp, bool ownerLevel,
                             AstVar* randModeVarp, FileLine* fl) {
-        if (!varp->rand().isRandomizable()) {
-            return new AstConst{fl, AstConst::BitTrue{}, ownerLevel};
-        }
+        if (!isSolvedVar(varp)) return new AstConst{fl, AstConst::BitTrue{}, ownerLevel};
         const RandomizeMode rmode = {.asUQuad = varp->user1()};
         if (!rmode.usesMode) return new AstConst{fl, AstConst::BitTrue{}};
         return newModeBitRead(varp, mselp, randModeVarp, fl);
@@ -5950,7 +5951,7 @@ class RandomizeVisitor final : public VNVisitor {
 
     // Replace AstDist with weighted bucket selection via AstConstraintIf chain.
     // Supports both constant and variable weight expressions.
-    void lowerDistConstraints(AstTask* taskp, AstNode* constrItemsp, AstVar* randModeVarp,
+    void lowerDistConstraints(AstNodeFTask* taskp, AstNode* constrItemsp, AstVar* randModeVarp,
                               AstConstraintForeach* foreachp = nullptr) {
         // When inside a foreach, bucket preamble stmts are stored in foreachp->user3p()
         // (as a linked list) so visit(AstConstraintForeach*) can inject them into the
@@ -6741,9 +6742,10 @@ class RandomizeVisitor final : public VNVisitor {
                     randomizeFuncp->addStmtsp(
                         implementConstraintsClearAll(randomizeFuncp->fileline(), stdrandp));
                 }
-                AstNode* const capturedTreep = withp->exprp()->unlinkFrBackWithNext();
-                AstBegin* const setupBlockp
-                    = new AstBegin{fl, "__Vsetup_constraints", capturedTreep, true};
+                AstBegin* const setupBlockp = new AstBegin{
+                    fl, "__Vsetup_constraints", withp->exprp()->unlinkFrBackWithNext(), true};
+                lowerDistConstraints(randomizeFuncp, setupBlockp->stmtsp(), nullptr);
+                AstNode* const capturedTreep = setupBlockp->stmtsp();
                 randomizeFuncp->addStmtsp(setupBlockp);
                 {
                     expandUniqueElementList(capturedTreep);
@@ -6885,9 +6887,11 @@ class RandomizeVisitor final : public VNVisitor {
         }
 
         // Generate constraint setup code and a hardcoded call to the solver
-        AstNode* const capturedTreep = withp->exprp()->unlinkFrBackWithNext();
-        AstBegin* const setupBlockp
-            = new AstBegin{nodep->fileline(), "__Vsetup_constraints", capturedTreep, true};
+        AstBegin* const setupBlockp = new AstBegin{nodep->fileline(), "__Vsetup_constraints",
+                                                   withp->exprp()->unlinkFrBackWithNext(), true};
+        // Dist bucket draws go into the function, ahead of the constraints reading them
+        lowerDistConstraints(randomizeFuncp, setupBlockp->stmtsp(), randModeVarp);
+        AstNode* const capturedTreep = setupBlockp->stmtsp();
         randomizeFuncp->addStmtsp(setupBlockp);
 
         // Pre-scan captured tree for .size on dynamic/assoc arrays and replace
