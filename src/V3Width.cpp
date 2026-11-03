@@ -1737,6 +1737,10 @@ class WidthVisitor final : public VNVisitor {
         // IEEE 1800-2023 16.9.2 -- consecutive repetition [*N], [*N:M], [*N:$], [+], [*]
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
+            if (VN_IS(nodep->maxCountp(), Unbounded)) {  // [*N:$], also from a parameter of '$'
+                pushDeletep(nodep->maxCountp()->unlinkFrBack());
+                nodep->unbounded(true);
+            }
             userIterateAndNext(nodep->exprp(), WidthVP{SELF, BOTH}.p());
             userIterateAndNext(nodep->countp(), WidthVP{SELF, BOTH}.p());
             userIterateAndNext(nodep->maxCountp(), WidthVP{SELF, BOTH}.p());
@@ -2099,11 +2103,25 @@ class WidthVisitor final : public VNVisitor {
         nodep->dtypeSetInt();  // Used in int context
         if (VN_IS(nodep->backp(), IsUnbounded)) return;  // Ok, leave
         if (VN_IS(nodep->backp(), BracketArrayDType)) return;  // Ok, leave
+        if (VN_IS(nodep->backp(), QueueDType)) return;  // Ok, leave
+        const AstNode* const abovep = nodep->aboveLoopp();
+        if (VN_IS(abovep, CoverBin)) return;  // V3Covergroup checks
+        if (const AstCoverWith* const withp = VN_CAST(abovep, CoverWith)) {
+            if (nodep != withp->filterp()) return;  // Bins value, V3Covergroup checks
+        }
+        if (VN_IS(abovep, CoverBinsof)) {
+            nodep->v3error("Intersect value may not be '$', which may only bound a range "
+                           "(IEEE 1800-2023 6.20.7)");
+            return;
+        }
         if (VN_IS(nodep->backp(), InsideRange)) return;  // Ok, leave
         if (const auto* const varp = VN_CAST(nodep->backp(), Var)) {
             if (varp->isParam()) return;  // Ok, leave
         }
         if (isUntypedSvaActual(nodep)) return;  // Ok, its uses are checked when substituted
+        if (const auto* const pinp = VN_CAST(nodep->backp(), Pin)) {
+            if (pinp->param()) return;  // Ok, leave
+        }
         AstNode* backp = nodep->backp();
         if (VN_IS(backp, Sub)) backp = backp->backp();
         if (const auto* const selp = VN_CAST(backp, SelExtract)) {
@@ -2369,6 +2387,17 @@ class WidthVisitor final : public VNVisitor {
     void visit(AstCoverTransSet* nodep) override { userIterateAndNext(nodep->itemsp(), m_vup); }
     void visit(AstCoverTransItem* nodep) override {
         widthCovergroupRanges(nodep->valuesp(), m_vup ? m_vup->dtypep()->width() : 0);
+        // Repetition counts are self-determined, which V3Covergroup checks once folded
+        for (AstNodeExpr* countp : {nodep->repMinp(), nodep->repMaxp()}) {
+            if (!countp) continue;
+            if (VN_IS(countp, Unbounded)) {
+                countp->dtypeSetInt();
+            } else {
+                countp = VN_AS(userIterateSubtreeReturnEdits(countp, WidthVP{SELF, BOTH}.p()),
+                               NodeExpr);
+                V3Const::constifyEdit(countp);  // countp may change
+            }
+        }
     }
     void visit(AstPow* nodep) override {
         // Pow is special, output sign only depends on LHS sign, but

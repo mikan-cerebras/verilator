@@ -20,6 +20,12 @@ module t;
       bins four_state_with = {[4'b000x : 4'hf]} with (1);  // <--- Bad: x bound
       bins param_size[UNBOUNDED] = {[0 : 3]};  // <--- Bad: '$'
       bins param_value[2] = {UNBOUNDED};  // <--- Bad: '$'
+      bins value = {$};  // <--- Bad: '$'
+      bins array_value[] = {1, $};  // <--- Bad: '$'
+      ignore_bins ignore_value = {UNBOUNDED};  // <--- Bad: '$'
+      bins value_with = {$} with (item > 1);  // <--- Bad: '$'
+      bins param_with = {1, UNBOUNDED} with (item > 0);  // <--- Bad: '$'
+      bins range_with = {[1 : $]} with (item > 1);
     }
   endgroup
 

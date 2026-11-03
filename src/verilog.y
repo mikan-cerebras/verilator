@@ -6931,14 +6931,7 @@ sexpr<nodeExprp>:  // ==IEEE: sequence_expr  (The name sexpr is important as reg
                         { $$ = new AstSConsRep{$<fl>2, $1, $3}; }
         //                      // [*N:M] bounded range or [*N:$] unbounded range
         |       ~p~sexpr/*sexpression_or_dist*/ yP_BRASTAR constExpr ':' constExpr ']'
-                        {
-                            if (VN_IS($5, Unbounded)) {
-                                DEL($5);
-                                $$ = new AstSConsRep{$<fl>2, $1, $3, nullptr, true};
-                            } else {
-                                $$ = new AstSConsRep{$<fl>2, $1, $3, $5, false};
-                            }
-                        }
+                        { $$ = new AstSConsRep{$<fl>2, $1, $3, $5, false}; }
         //                      // [+] = [*1:$]
         |       ~p~sexpr/*sexpression_or_dist*/ yP_BRAPLUSKET
                         { $$ = new AstSConsRep{$<fl>2, $1,
@@ -7351,19 +7344,17 @@ trans_range_list<nodep>:  // ==IEEE: trans_range_list (returns AstCoverTransItem
                         $$ = new AstCoverTransItem{$<fl>1, $1, VTransRepType::NONE};
                 }
         |       trans_item yP_BRASTAR cgexpr ']'
-                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Unsupported: '[*]' in cover transition"); DEL($1, $3); }
+                        { $$ = new AstCoverTransItem{$<fl>2, $1, VTransRepType::CONSEC, $3}; }
         |       trans_item yP_BRASTAR cgexpr ':' cgexpr ']'
-                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Unsupported: '[*]' in cover transition"); DEL($1, $3, $5); }
+                        { $$ = new AstCoverTransItem{$<fl>2, $1, VTransRepType::CONSEC, $3, $5}; }
         |       trans_item yP_BRAMINUSGT cgexpr ']'
-                        { BBCOVERIGN($<fl>2, "Unsupported: '[->' in cover transition"); DEL($3);
-                          $$ = new AstCoverTransItem{$<fl>1, $1, VTransRepType::GOTO}; }
+                        { $$ = new AstCoverTransItem{$<fl>2, $1, VTransRepType::GOTO, $3}; }
         |       trans_item yP_BRAMINUSGT cgexpr ':' cgexpr ']'
-                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Unsupported: '[->' in cover transition"); DEL($1, $3, $5); }
+                        { $$ = new AstCoverTransItem{$<fl>2, $1, VTransRepType::GOTO, $3, $5}; }
         |       trans_item yP_BRAEQ cgexpr ']'
-                        { BBCOVERIGN($<fl>2, "Unsupported: '[=]' in cover transition"); DEL($3);
-                          $$ = new AstCoverTransItem{$<fl>1, $1, VTransRepType::NONCONS}; }
+                        { $$ = new AstCoverTransItem{$<fl>2, $1, VTransRepType::NONCONS, $3}; }
         |       trans_item yP_BRAEQ cgexpr ':' cgexpr ']'
-                        { $$ = nullptr; BBCOVERIGN($<fl>2, "Unsupported: '[=]' in cover transition"); DEL($1, $3, $5); }
+                        { $$ = new AstCoverTransItem{$<fl>2, $1, VTransRepType::NONCONS, $3, $5}; }
         ;
 
 trans_item<nodep>:  // ==IEEE: range_list (returns range list node)
