@@ -60,6 +60,10 @@ class VSymEnt final {
     bool m_exported = true;  // Allow importing
     bool m_imported = false;  // Was imported
     bool m_wildImported = false;  // Was imported on lookup through a wildcard import
+    bool m_importAmbiguous = false;  // Wildcard imported, but a different item of the same name
+                                     // was also wildcard imported (IEEE 1800-2023 26.3)
+    bool m_hidesWildcard = false;  // Declaration hides a wildcard imported item of the same name
+    bool m_checkWildConflicts = true;  // Track names wildcard imported from multiple packages
 #ifdef VL_DEBUG
     VL_DEFINE_DEBUG_FUNCTIONS;
 #else
@@ -134,6 +138,9 @@ public:
     void exported(bool flag) { m_exported = flag; }
     bool imported() const { return m_imported; }
     void imported(bool flag) { m_imported = flag; }
+    bool importAmbiguous() const { return m_importAmbiguous; }
+    bool hidesWildcard() const { return m_hidesWildcard; }
+    void hidesWildcard(bool flag) { m_hidesWildcard = flag; }
     VSymEnt* insert(const string& name, VSymEnt* entp) {
         UINFO(9, "     SymInsert se" << cvtToHex(this) << " '" << name << "' se" << cvtToHex(entp)
                                      << "  " << entp->nodep());
@@ -183,10 +190,25 @@ public:
             if (pkgIt != pkgSymp->m_idNameMap.end() && pkgIt->second->exported()) {
                 VSymEnt* const symp = insert(name, newImportedSymbol(pkgIt->second));
                 symp->m_wildImported = true;
+                if (m_checkWildConflicts) {
+                    for (const VSymEnt* const otherp : m_wildImportps) {
+                        if (wildExportsOther(otherp, name, symp)) symp->m_importAmbiguous = true;
+                    }
+                }
                 return symp;
             }
         }
         return nullptr;
+    }
+    // Whether name is, or on lookup would be, imported here through a wildcard import
+    bool wildImportable(const string& name) const {
+        const auto it = m_idNameMap.find(name);
+        if (it != m_idNameMap.end()) return it->second->m_wildImported;
+        for (const VSymEnt* const pkgSymp : m_wildImportps) {
+            const auto pkgIt = pkgSymp->m_idNameMap.find(name);
+            if (pkgIt != pkgSymp->m_idNameMap.end() && pkgIt->second->exported()) return true;
+        }
+        return false;
     }
     static bool checkSimilarname(const AstNode* nodep) {
         // Only declarations that can contribute a name to the netlist handed
@@ -269,11 +291,25 @@ private:
         symp->imported(true);
         return symp;
     }
+    // Whether wildcard imported package pkgSymp exports name as another item than symp's
+    static bool wildExportsOther(const VSymEnt* pkgSymp, const string& name, const VSymEnt* symp) {
+        const auto it = pkgSymp->m_idNameMap.find(name);
+        return it != pkgSymp->m_idNameMap.end() && it->second->exported()
+               && it->second->nodep() != symp->nodep();
+    }
     void addWildImport(const VSymEnt* pkgSymp) {
         // Repeated imports of a package would only slow lookups that miss
         if (std::find(m_wildImportps.begin(), m_wildImportps.end(), pkgSymp)
-            == m_wildImportps.end()) {
-            m_wildImportps.push_back(pkgSymp);
+            != m_wildImportps.end()) {
+            return;
+        }
+        m_wildImportps.push_back(pkgSymp);
+        if (!m_checkWildConflicts) return;
+        // Names imported by earlier lookups are not looked up again
+        for (const auto& itr : m_idNameMap) {
+            if (itr.second->m_wildImported && wildExportsOther(pkgSymp, itr.first, itr.second)) {
+                itr.second->m_importAmbiguous = true;
+            }
         }
     }
     void importOneSymbol(const string& name, const VSymEnt* srcp, bool honorExport) {
@@ -324,12 +360,16 @@ public:
             if (!haveExterns.count(it->first)) importOneSymbol(it->first, it->second, false);
         }
     }
-    void importFromPackage(const VSymEnt* srcp, const string& id_or_star) {
-        // Import tokens from source symbol table into this symbol table
+    void importFromPackage(const VSymEnt* srcp, const string& id_or_star,
+                           bool checkWildConflicts) {
+        // Import tokens from source symbol table into this symbol table.
+        // If !checkWildConflicts, a name wildcard imported from several packages is taken from
+        // the first one, without marking it ambiguous.
         if (id_or_star != "*") {
             const auto it = srcp->m_idNameMap.find(id_or_star);
             if (it != srcp->m_idNameMap.end()) importOneSymbol(it->first, it->second, true);
         } else {
+            if (!checkWildConflicts) m_checkWildConflicts = false;
             addWildImport(srcp);  // Symbols are imported on lookup, see findIdFlat
         }
     }
