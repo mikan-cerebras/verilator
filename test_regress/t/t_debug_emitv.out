@@ -378,6 +378,8 @@ module t;
                      $realtime, $time, $time);
             $sscanf("foo=5", "foo=%d", i);
             ;
+            $sscanf(40'h666f6f3d35, str, i);
+            ;
             $printtimescale;
             if ((i != 32'sh5)) begin
                 $stop;
@@ -892,6 +894,18 @@ module t;
         assert property (@(posedge clk) 
             ???? // IMPLICATION
             inin
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assert_prop_match_item
+        assert property (@(posedge clk) 
+            ???? // IMPLICATION
+            $_EXPRSTMT(
+                $display("match");
+                , in);
+            in
         ) begin
         end
         else begin

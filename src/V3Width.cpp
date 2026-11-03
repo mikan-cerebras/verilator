@@ -7530,6 +7530,7 @@ class WidthVisitor final : public VNVisitor {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
             iterateCheckFileDesc(nodep, nodep->filep(), BOTH);
+            if (nodep->formatp()) iterateCheckString(nodep, "format", nodep->formatp(), BOTH);
             userIterateAndNext(nodep->exprsp(), WidthVP{SELF, BOTH}.p());
         }
     }
@@ -7537,6 +7538,7 @@ class WidthVisitor final : public VNVisitor {
         assertAtExpr(nodep);
         if (m_vup->prelim()) {
             userIterateAndNext(nodep->fromp(), WidthVP{SELF, BOTH}.p());
+            if (nodep->formatp()) iterateCheckString(nodep, "format", nodep->formatp(), BOTH);
             userIterateAndNext(nodep->exprsp(), WidthVP{SELF, BOTH}.p());
         }
     }

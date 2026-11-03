@@ -605,14 +605,18 @@ class EmitVBaseVisitorConst VL_NOT_FINAL : public VNVisitorConst {
         puts(")");
     }
     void visitNodeDisplay(AstNode* nodep, AstNode* fileOrStrgp, const string& text,
-                          AstNode* exprsp) {
+                          AstNode* exprsp, AstNode* formatp = nullptr) {
         putfs(nodep, nodep->verilogKwd());
         putbs("(");
         if (fileOrStrgp) {
             iterateConstNull(fileOrStrgp);
             putbs(", ");
         }
-        putsQuoted(text);
+        if (formatp) {
+            iterateConst(formatp);
+        } else {
+            putsQuoted(text);
+        }
         for (AstNode* expp = exprsp; expp; expp = expp->nextp()) {
             puts(", ");
             iterateConstNull(expp);
@@ -627,10 +631,10 @@ class EmitVBaseVisitorConst VL_NOT_FINAL : public VNVisitorConst {
         visitNodeDisplay(nodep, nullptr, nodep->fmtp()->text(), nodep->fmtp()->exprsp());
     }
     void visit(AstFScanF* nodep) override {
-        visitNodeDisplay(nodep, nodep->filep(), nodep->text(), nodep->exprsp());
+        visitNodeDisplay(nodep, nodep->filep(), nodep->text(), nodep->exprsp(), nodep->formatp());
     }
     void visit(AstSScanF* nodep) override {
-        visitNodeDisplay(nodep, nodep->fromp(), nodep->text(), nodep->exprsp());
+        visitNodeDisplay(nodep, nodep->fromp(), nodep->text(), nodep->exprsp(), nodep->formatp());
     }
     void visit(AstSFormat* nodep) override {
         visitNodeDisplay(nodep, nodep->lhsp(), nodep->fmtp()->text(), nodep->fmtp()->exprsp());

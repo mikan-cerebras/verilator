@@ -349,6 +349,7 @@ module t (/*AUTOARG*/
     $fgetc(fd);  //  stmt
     $fflush(fd);
     $fscanf(fd, "%d", sum);
+    $fscanf(fd, str, sum);
     $fdisplay("i = ", sum);
     $fwrite(fd, "hello");
     $readmemh(fd, array);
@@ -392,6 +393,7 @@ module t (/*AUTOARG*/
     $display("struct = %p", ps);
     $display("%% [%t] [%t] to=%o td=%d", $time, $realtime, $time, $time);
     $sscanf("foo=5", "foo=%d", i);
+    $sscanf("foo=5", str, i);
     $printtimescale;
     if (i != 5) $stop;
 
@@ -558,6 +560,7 @@ module t (/*AUTOARG*/
   assert_prop_s_always: assert property (@(posedge clk) s_always [1:2] in);
   assert_prop_overlap_impl: assert property (@(posedge clk) in |-> in);
   assert_prop_nonoverlap_impl: assert property (@(posedge clk) in |=> in);
+  assert_prop_match_item: assert property (@(posedge clk) (in, $display("match")) |-> in);
   assert_prop_overlap_fb: assert property (@(posedge clk) in #-# in);
   assert_prop_nonoverlap_fb: assert property (@(posedge clk) in #=# in);
   assert_prop_accept_on: assert property (@(posedge clk) accept_on (in) in);
