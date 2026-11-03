@@ -1073,6 +1073,13 @@ void VlRandomizer::emitDeclares(std::ostream& os, bool pinCurrent) const {
                 os << "))\n";
             }
         }
+        const auto domainIt = m_enumDomains.find(var.first);
+        if (domainIt == m_enumDomains.end()) continue;
+        for (int j = 0; j < var.second->totalWidth() / var.second->width(); ++j) {
+            os << "(assert (let ((__Ve";
+            var.second->emitElement(os, j);
+            os << ")) " << domainIt->second << "))\n";
+        }
     }
 }
 
@@ -1818,6 +1825,7 @@ void VlRandomizer::clearAll() {
     m_constraintVarEnds.clear();
     m_softConstraints.clear();
     m_vars.clear();
+    m_enumDomains.clear();
     m_randcVarNames.clear();
     m_randcUsedValues.clear();
     m_randcConstraintHash = 0;
