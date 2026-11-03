@@ -878,7 +878,12 @@ class RandomizeMarkVisitor final : public VNVisitor {
             std::vector<AstVar*> newPath = pathToClass;
             newPath.push_back(memberVarp);
             if (!memberClassRefp) {
-                if (!isHandleArray(memberVarp)) return;
+                // Not a fixed-size array yet: its elements are reached by a nested access,
+                // where the cloned forms are not all supported
+                if (!isHandleArray(memberVarp)
+                    || VN_IS(memberVarp->dtypep()->skipRefp(), UnpackArrayDType)) {
+                    return;
+                }
                 AstNodeExpr* const arrRefp = buildMemberSelChain(rootVarRefp, newPath);
                 cloneElementConstraints(arrRefp, clonePathPrefix(rootVarRefp, newPath),
                                         targetClassp);
@@ -3236,8 +3241,9 @@ class ConstraintExprVisitor final : public VNVisitor {
         if (m_nestedAccess) {
             AstNodeExpr* const bitp = nodep->bitp()->cloneTreePure(false);
             AstNodeExpr* const bitFormatp
-                = indexIsRand ? new AstSFormatF{bitp->fileline(), bitp->name(), false, nullptr}
-                              : new AstSFormatF{bitp->fileline(), "%x", false, bitp};
+                = indexIsRand
+                      ? new AstSFormatF{bitp->fileline(), bitp->name(), false, nullptr}
+                      : new AstSFormatF{bitp->fileline(), objectElem ? "%0x" : "%x", false, bitp};
             AstSFormatF* const herep
                 = new AstSFormatF{nodep->fileline(), "%s.%s", false, bitFormatp};
             if (AstSel* const selp = VN_CAST(bitp, Sel)) {
