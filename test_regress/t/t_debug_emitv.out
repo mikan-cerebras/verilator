@@ -1827,6 +1827,10 @@ package p;
         end
     endfunction
 endpackage
+module defparam_gen__pie9c2606d;
+    /* generate */ begin : dpg
+    end : dpg
+endmodule
 module param_mod__Tzc7cce3e0_P3;
     parameter int PW = 32'sh3;
     input byte pin;
@@ -1856,9 +1860,9 @@ package Pkg;
         killQueue(__VprocessQueue_named__0);
     endtask
 endpackage
-module Vt_debug_emitv_defparam_leaf;
-    bit signed [31:0]  P;
+module defparam_leaf;
+    parameter bit signed [31:0]  P = 32'sh1;
 endmodule
-module Vt_debug_emitv_defparam_leaf__P2;
-    bit signed [31:0]  P;
+module defparam_leaf__P2;
+    parameter bit signed [31:0]  P = 32'sh2;
 endmodule
