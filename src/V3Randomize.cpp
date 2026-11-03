@@ -1485,7 +1485,7 @@ class ConstraintExprVisitor final : public VNVisitor {
         std::string constraint = "(__Vbv (or";
         for (AstEnumItem* const itemp : enumDtp->itemspList()) {
             const AstConst* const vconstp = VN_AS(itemp->valuep(), Const);
-            constraint += " (= " + smtName + " (_ bv" + cvtToStr(vconstp->toUInt()) + " "
+            constraint += " (= " + smtName + " (_ bv" + vconstp->num().toDecimalU() + " "
                           + cvtToStr(width) + "))";
         }
         constraint += "))";
@@ -2614,7 +2614,7 @@ class ConstraintExprVisitor final : public VNVisitor {
         // (IEEE 1800-2023 18.4). A nested array access has no fixed solver name.
         AstEnumDType* const enumDtp
             = m_nestedAccess ? nullptr : VN_CAST(varp->dtypep()->skipRefToEnump(), EnumDType);
-        if (enumDtp && m_rangeConstrainedEnums.insert(smtName).second) {
+        if (enumDtp && m_rangeConstrainedEnums.emplace(smtName).second) {
             AstVar* genVarp = m_genp;
             if (m_classp && m_classp->user3p()) genVarp = VN_AS(m_classp->user3p(), Var);
             UASSERT_OBJ(genVarp, nodep, "No 'randomize' variable in m_genp or m_classp");
