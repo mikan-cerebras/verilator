@@ -318,6 +318,11 @@ static AstNodeStmt* newIfAssertFailOn(AstNode* bodyp, VAssertDirectiveType direc
 //######################################################################
 // NFA Builder
 
+// True if a node has a multi-cycle sequence or property expression in it
+static bool hasMultiCycleExpr(const AstNode* nodep) {
+    return nodep->exists([](const AstNodeExpr* np) { return np->isMultiCycleSva(); });
+}
+
 class SvaNfaBuilder final {
     SvaGraph& m_graph;  // NFA graph being built
     AstNodeModule* const m_modp;  // Module to receive hoisted sampled-prop temps
@@ -329,6 +334,9 @@ class SvaNfaBuilder final {
     bool m_inUnboundedScope = false;  // Sticky: nodes created after inherit liveness
     bool m_markStrongPending = false;  // Mark new vertices as strong s_always in-window
     bool m_isCover = false;  // Cover directives do not fail at end-of-simulation
+    // Negated: a strong obligation pending at end-of-simulation makes the property hold
+    // (IEEE 1800-2023 16.12.3)
+    bool m_isNegated = false;
     // IEEE 1800-2023 16.14.3 cover sequence: each end-of-match fires the action,
     // not just the first. Builder builds parallel-branch (no first-match-wins)
     // topology when true. Default false preserves cover_property semantics.
@@ -338,6 +346,11 @@ class SvaNfaBuilder final {
     bool m_inSequencePrefix = false;  // Prefix composition does not preserve every endpoint
     bool m_wantBoolLeaf = false;  // Building a |-> / |=> or top-level body (see buildOrMerge)
     bool m_trackVacuous = false;  // Record vacuous successes (they fail a negated assertion)
+    // Building an implication antecedent, which cannot fail, and every match of which counts
+    bool m_inAntecedent = false;
+    // Building the consequent of an antecedent with a zero-minimum repetition, whose empty
+    // match is not filtered (see buildImplicationEdges)
+    bool m_inEmptyMatchConsequent = false;
 
     struct RangeDelayRejectInfo final {
         SvaStateVertex* startp = nullptr;
@@ -651,10 +664,10 @@ class SvaNfaBuilder final {
         } else {
             // The first eligible tick is explicit. The ring retains attempts for the
             // remaining ticks and exposes the final tick for rejection. Only properties
-            // clear on success, since cover sequence counts every endpoint.
+            // clear on success, since a cover sequence and an antecedent use every endpoint.
             midSources.push_back(currentp);
             currentp = addDelayChain(currentp, range + 1U, flp, false,
-                                     m_isCoverSeq ? nullptr : rhsExprp);
+                                     m_isCoverSeq || m_inAntecedent ? nullptr : rhsExprp);
         }
         return true;
     }
@@ -1029,7 +1042,7 @@ class SvaNfaBuilder final {
         // not flagged; an attempt whose final tick coincides with $finish is still
         // flagged, matching the strong reference. Weak always[m:n] is not marked.
         VL_RESTORER(m_markStrongPending);
-        m_markStrongPending = nodep->isStrong();
+        m_markStrongPending = nodep->isStrong() && !m_isCover && !m_isNegated;
         // Check the first in-window tick, then reuse a guarded fixed-delay ring
         // for the remaining ticks instead of creating one state per cycle.
         SvaStateVertex* currentp = addDelayChain(entryVtxp, lo, flp);
@@ -1111,10 +1124,61 @@ class SvaNfaBuilder final {
         return !condp->exists(
             [](const AstNodeExpr* np) { return np->isMultiCycleSva() || VN_IS(np, Implication); });
     }
+    // Build `b or p` at the end of an asserted property, with b boolean
+    BuildResult buildBoolOrProp(AstNodeExpr* boolp, AstNodeExpr* propp, SvaStateVertex* entryVtxp,
+                                FileLine* flp) {
+        // It holds at once when b holds and otherwise exactly when p does (IEEE 1800-2023
+        // 16.12.4). So p is evaluated only when b is false, with the rejections of a top-level
+        // property.
+        SvaStateVertex* const propEntryp = scopedCreateVertex();
+        guardedLink(entryVtxp, propEntryp,
+                    new AstLogNot{flp, sampled(boolp->cloneTreePure(false))}, flp);
+        VL_RESTORER(m_wantBoolLeaf);
+        m_wantBoolLeaf = true;
+        const BuildResult prop = buildExpr(propp, propEntryp, /*isTopLevelStep=*/true);
+        if (!prop.valid()) return prop;
+        SvaStateVertex* const propTermp = prop.termVertexp;
+        // A ranged end rejects through its ring at the match vertex, which p does not reach
+        if (!prop.midSources.empty()) {
+            flp->v3warn(E_UNSUPPORTED,
+                        "Unsupported: property 'or' with an operand ending in a ranged delay");
+            freeUnlinkedCondp(prop.finalCondp);
+            return BuildResult::failWithError();
+        }
+        UASSERT_OBJ(!propTermp->m_delayRingSize || propTermp->m_isFixedDelayRing, propTermp,
+                    "Ranged delay ring ends a property without mid-window sources");
+        // Otherwise reach the merge vertex as p would reach the match vertex
+        SvaStateVertex* const mergeVtxp = scopedCreateVertex();
+        guardedLink(entryVtxp, mergeVtxp, sampled(boolp->cloneTreePure(false)), flp);
+        if (!prop.finalCondp) {
+            guardedLink(propTermp, mergeVtxp, flp);
+            return {mergeVtxp, nullptr, {}};
+        }
+        guardedLink(propTermp, mergeVtxp, sampled(prop.finalCondp->cloneTreePure(false)), flp);
+        if (!propTermp->m_isUnbounded) {
+            SvaStateVertex* const sinkVtxp = m_graph.createStateVertex();
+            sinkVtxp->m_isRejectSink = true;
+            SvaTransEdge* const edgep = m_graph.addLink(
+                propTermp, sinkVtxp, sampled(prop.finalCondp->cloneTreePure(false)));
+            edgep->m_rejectOnFail = true;
+        }
+        freeUnlinkedCondp(prop.finalCondp);
+        return {mergeVtxp, nullptr, {}};
+    }
 
     // Build merge vertex for SOr / LogOr: both branches feed into one vertex.
     BuildResult buildOrMerge(AstNodeExpr* lhsp, AstNodeExpr* rhsp, SvaStateVertex* entryVtxp,
                              FileLine* flp, bool wantBoolLeaf) {
+        // An attempt fails when every operand fails, which the merge vertex does not see
+        const bool canFail = !m_isCover && !m_inAntecedent;
+        if (canFail && wantBoolLeaf) {
+            if (isPlainBoolean(lhsp) && hasMultiCycleExpr(rhsp)) {
+                return buildBoolOrProp(lhsp, rhsp, entryVtxp, flp);
+            }
+            if (isPlainBoolean(rhsp) && hasMultiCycleExpr(lhsp)) {
+                return buildBoolOrProp(rhsp, lhsp, entryVtxp, flp);
+            }
+        }
         const BuildResult lhs = buildExpr(lhsp, entryVtxp);
         const BuildResult rhs = buildExpr(rhsp, entryVtxp);
         if (!lhs.valid() || !rhs.valid()) {  // LCOV_EXCL_START -- sub-build fail bail
@@ -1135,11 +1199,11 @@ class SvaNfaBuilder final {
             freeUnlinkedCondp(rhs.finalCondp);
             return BuildResult::failWithError();
         }
-        if (booleanOnly && wantBoolLeaf) {
+        if (booleanOnly && (wantBoolLeaf || (canFail && !m_inEmptyMatchConsequent))) {
             if (isPlainBoolean(lhs.finalCondp) && isPlainBoolean(rhs.finalCondp)) {
-                // As a |-> / |=> or top-level body, a disjunction of two plain booleans must
-                // be able to reject: return it as a boolean finalCondp. The merge vertex
-                // below drops the attempt silently when both operands are false.
+                // A disjunction of two plain booleans must be able to reject: return it as a
+                // boolean finalCondp. The merge vertex below drops the attempt silently when
+                // both operands are false.
                 AstNodeExpr* const orCondp
                     = new AstLogOr{flp, lhs.finalCondp->cloneTreePure(false),
                                    rhs.finalCondp->cloneTreePure(false)};
@@ -1157,22 +1221,37 @@ class SvaNfaBuilder final {
                                      sampled(rhs.finalCondp->cloneTreePure(false))},
                         flp);
         } else {
-            if (lhs.finalCondp) {
-                guardedLink(lhs.termVertexp, mergeVtxp,
-                            sampled(lhs.finalCondp->cloneTreePure(false)), flp);
-            } else {
-                guardedLink(lhs.termVertexp, mergeVtxp, flp);
-            }
-            if (rhs.finalCondp) {
-                guardedLink(rhs.termVertexp, mergeVtxp,
-                            sampled(rhs.finalCondp->cloneTreePure(false)), flp);
-            } else {
-                guardedLink(rhs.termVertexp, mergeVtxp, flp);
+            for (const BuildResult* const opp : {&lhs, &rhs}) {
+                // The first eligible tick of a range delay is a separate source
+                std::vector<SvaStateVertex*> endps = opp->midSources;
+                endps.push_back(opp->termVertexp);
+                for (SvaStateVertex* const endp : endps) {
+                    if (opp->finalCondp) {
+                        guardedLink(endp, mergeVtxp,
+                                    sampled(opp->finalCondp->cloneTreePure(false)), flp);
+                    } else {
+                        guardedLink(endp, mergeVtxp, flp);
+                    }
+                }
             }
         }
         freeUnlinkedCondp(lhs.finalCondp);
         freeUnlinkedCondp(rhs.finalCondp);
         return {mergeVtxp, nullptr, {}};
+    }
+
+    // Build `b and p` at the end of a property, with b boolean
+    BuildResult buildBoolAndProp(AstNodeExpr* boolp, AstNodeExpr* propp, SvaStateVertex* entryVtxp,
+                                 FileLine* flp) {
+        // It fails at once when b fails and otherwise exactly when p does (IEEE 1800-2023
+        // 16.12.5).
+        SvaStateVertex* const propEntryp = scopedCreateVertex();
+        SvaTransEdge* const edgep
+            = guardedLink(entryVtxp, propEntryp, sampled(boolp->cloneTreePure(false)), flp);
+        edgep->m_rejectOnFail = true;
+        VL_RESTORER(m_wantBoolLeaf);
+        m_wantBoolLeaf = true;
+        return buildExpr(propp, propEntryp, /*isTopLevelStep=*/true);
     }
 
     // Build done-latch combiner for SAnd/SIntersect (IEEE 1800-2023 16.9.5).
@@ -1335,16 +1414,16 @@ class SvaNfaBuilder final {
             }
             return flattenFixedSeq(sexprp->exprp(), baseOffset + preLen + delayCycles, out);
         }
-        if (nodep->isMultiCycleSva()) return false;
+        if (!isPlainBoolean(nodep)) return false;
         out[baseOffset].push_back(nodep);
         return true;
     }
 
-    // Conjoin two equal-length fixed sequences into one: at each clock offset
-    // AND the boolean checks of both operands (IEEE 1800-2023 16.9.6 -- both
-    // operands match the same window). Returns null if either operand is not a
-    // plain fixed sequence of boolean leaves.
+    // Conjoin two fixed-length sequences starting together into one sequence, or null
     static AstNodeExpr* conjoinFixedSeqs(AstNodeExpr* lhsp, AstNodeExpr* rhsp, FileLine* flp) {
+        // At each clock offset AND the boolean checks of both operands. The result ends with the
+        // longer operand, which is exact for 'and' (IEEE 1800-2023 16.9.5), and for 'intersect'
+        // of equal lengths (16.9.6). Null if an operand is not a fixed sequence of boolean leaves.
         std::map<int, std::vector<AstNodeExpr*>> checks;
         if (!flattenFixedSeq(lhsp, 0, checks) || !flattenFixedSeq(rhsp, 0, checks)) return nullptr;
         if (checks.empty()) return nullptr;
@@ -1571,7 +1650,7 @@ class SvaNfaBuilder final {
         SvaStateVertex* const waitCp = scopedCreateVertex();
         SvaStateVertex* const waitRp = scopedCreateVertex();
         waitCp->m_isUnbounded = true;
-        waitRp->m_strongPending = nodep->isStrong() && !m_isCover;
+        waitRp->m_strongPending = nodep->isStrong() && !m_isCover && !m_isNegated;
 
         // Entry and back-loop Links carry no condition; throughout-folding still applies.
         guardedLink(entryVtxp, waitCp, flp);
@@ -1802,11 +1881,12 @@ public:
 
     SvaNfaBuilder(SvaGraph& graph, AstNodeModule* modp, V3UniqueNames& propTempNames,
                   bool isCoverSeq = false, bool isSeqEvent = false, bool isCover = false,
-                  bool trackVacuous = false)
+                  bool isNegated = false, bool trackVacuous = false)
         : m_graph{graph}
         , m_modp{modp}
         , m_propTempNames{propTempNames}
         , m_isCover{isCover}
+        , m_isNegated{isNegated}
         , m_isCoverSeq{isCoverSeq}
         , m_isSeqEvent{isSeqEvent}
         , m_trackVacuous{trackVacuous} {}
@@ -1848,6 +1928,24 @@ public:
                                 wantBoolLeaf);
         }
         if (AstSAnd* const andp = VN_CAST(nodep, SAnd)) {
+            // Both operands start together (IEEE 1800-2023 16.9.5): with fixed lengths the
+            // 'and' holds exactly when every check of both operands holds
+            if (!andp->propertyControl()) {
+                if (AstNodeExpr* const conjp
+                    = conjoinFixedSeqs(andp->lhsp(), andp->rhsp(), andp->fileline())) {
+                    return buildFromLoweringTree(conjp, entryVtxp, isTopLevelStep);
+                }
+                if (wantBoolLeaf) {
+                    if (isPlainBoolean(andp->lhsp())) {
+                        return buildBoolAndProp(andp->lhsp(), andp->rhsp(), entryVtxp,
+                                                andp->fileline());
+                    }
+                    if (isPlainBoolean(andp->rhsp())) {
+                        return buildBoolAndProp(andp->rhsp(), andp->lhsp(), entryVtxp,
+                                                andp->fileline());
+                    }
+                }
+            }
             return buildAndCombiner(andp->lhsp(), andp->rhsp(), entryVtxp, andp->fileline());
         }
         if (AstSIntersect* const intp = VN_CAST(nodep, SIntersect)) {
@@ -1900,8 +1998,21 @@ public:
         if (AstSEventually* const evp = VN_CAST(nodep, SEventually)) {
             return buildSEventually(evp, entryVtxp, isTopLevelStep);
         }
+        // A 'not' of a multi-cycle operand is no boolean leaf; at the top it is unwrapped
+        if (VN_IS(nodep, LogNot) && hasMultiCycleExpr(nodep)) {
+            nodep->v3warn(E_UNSUPPORTED, "Unsupported: 'not' of a multi-cycle operand inside "
+                                         "another property operator");
+            return BuildResult::failWithError();
+        }
         // Boolean leaf (including LogAnd): return as finalCond
         return {entryVtxp, nodep, {}};
+    }
+
+    // An antecedent that does not match leaves the implication vacuously true
+    BuildResult buildAntecedent(AstNodeExpr* antExprp, SvaStateVertex* entryVtxp) {
+        VL_RESTORER(m_inAntecedent);
+        m_inAntecedent = true;
+        return buildExpr(antExprp, entryVtxp);
     }
 
     // Wire an implication / followed-by from `entryVtxp`: builds the antecedent,
@@ -1914,7 +2025,7 @@ public:
                                       SvaStateVertex* entryVtxp, bool isOverlapped,
                                       bool isFollowedBy, AstNode* errorNodep, FileLine* flp,
                                       bool trackVacuous = false) {
-        const BuildResult antResult = buildExpr(antExprp, entryVtxp);
+        const BuildResult antResult = buildAntecedent(antExprp, entryVtxp);
         if (!antResult.valid()) return antResult;
 
         // Followed-by requires pure-boolean antecedent for non-vacuous-fail at
@@ -1951,6 +2062,11 @@ public:
         if (antResult.finalCondp) {
             m_graph.addLink(antResult.termVertexp, trigVtxp,
                             sampled(antResult.finalCondp->cloneTreePure(false)));
+            // The first eligible tick of a range delay is a separate source
+            for (SvaStateVertex* const midp : antResult.midSources) {
+                m_graph.addLink(midp, trigVtxp,
+                                sampled(antResult.finalCondp->cloneTreePure(false)));
+            }
             // Followed-by non-vacuous fail: rejectOnFail fires when the attempt
             // is live (termVtx reachable) and sampled(antecedent) is false.
             if (isFollowedBy) {
@@ -1981,7 +2097,9 @@ public:
         // An empty antecedent match must not start the consequent, but a zero-minimum
         // repetition's empty match is not handled here; keep the merge vertex for those
         VL_RESTORER(m_wantBoolLeaf);
-        m_wantBoolLeaf = !isFollowedBy && !hasZeroMinRep(antExprp);
+        VL_RESTORER(m_inEmptyMatchConsequent);
+        m_inEmptyMatchConsequent = hasZeroMinRep(antExprp);
+        m_wantBoolLeaf = !isFollowedBy && !m_inEmptyMatchConsequent;
         return buildExpr(bodyExprp, bodyEntryp, /*isTopLevelStep=*/true);
     }
 
@@ -3197,6 +3315,37 @@ public:
         V3Stats::addStatSum("Assertions, NFA link resolves", m_statLinkResolves);
     }
 
+    // Return the statements run by an assertion failing at end of simulation
+    AstNode* newFinalFailp(AstNodeCoverOrAssert* assertp) {
+        FileLine* const flp = assertp->fileline();
+        // The fail action replaces the default error (IEEE 1800-2023 16.14.1), unless it has a
+        // timing control, which could not resume in a final block (IEEE 1800-2023 9.2.3)
+        AstNode* const failsp = VN_AS(assertp, Assert)->failsp();
+        const bool hasTimingControl = failsp && failsp->existsAndNext([](const AstNode* np) {
+            return np->isTimingControl();
+        });
+        AstNode* stmtsp;
+        if (failsp && !hasTimingControl) {
+            stmtsp = failsp->cloneTree(true);
+            // An NBA, legal in an action block, executes as a blocking assignment in a final
+            // block, so FINALDLY does not apply
+            stmtsp->foreachAndNext([](AstAssignDly* const dlyp) {
+                FileLine* const newfl = new FileLine{dlyp->fileline()};
+                newfl->warnOff(V3ErrorCode::FINALDLY, true);
+                dlyp->fileline(newfl);
+            });
+        } else {
+            // V3Assert turns the DT_ERROR display into the standard "Assertion failed in %m"
+            AstDisplay* const dispp
+                = new AstDisplay{flp, VDisplayType::DT_ERROR, "", nullptr, nullptr};
+            dispp->fmtp()->timeunit(m_modp->timeunit());
+            stmtsp = dispp;
+            if (v3Global.opt.stopFail()) stmtsp->addNext(new AstStop{flp, false});
+        }
+        // Like a failure during simulation, subject to $assertcontrol FailOff
+        return newIfAssertFailOn(stmtsp, assertp->directive(), assertp->userType());
+    }
+
     // Lower NFA graph to synthesizable AstAlways blocks and raw result signals.
     // Links are combinational; Edges are registered (NBA).
     SignalSet lower(AstNodeCoverOrAssert* const assertp, SvaGraph& graph,
@@ -3379,8 +3528,7 @@ public:
         // Strong s_always[m:n] end-of-simulation liveness: if any in-window state
         // is still set at $finish, the universal-quantifier window never completed
         // (IEEE 1800-2023 16.12.11 strong semantics). Fire the assertion failure
-        // from a final block; V3Assert turns the DT_ERROR display into the standard
-        // "Assertion failed in %m" message.
+        // from a final block.
         // pending = |{strong state registers, strong delay live counts != 0};
         AstNodeExpr* pendingp = nullptr;
         for (int i = 0; i < N; ++i) {
@@ -3404,12 +3552,7 @@ public:
             AstCExpr* const assertOnp
                 = new AstCExpr{flp, AstCExpr::Pure{}, "vlSymsp->_vm_contextp__->assertOn()", 1};
             AstNodeExpr* const condp = new AstLogAnd{flp, assertOnp, pendingp};
-            AstDisplay* const dispp
-                = new AstDisplay{flp, VDisplayType::DT_ERROR, "", nullptr, nullptr};
-            dispp->fmtp()->timeunit(m_modp->timeunit());
-            AstNodeStmt* const firep = dispp;
-            if (v3Global.opt.stopFail()) firep->addNext(new AstStop{flp, false});
-            m_modp->addStmtsp(new AstFinal{flp, new AstIf{flp, condp, firep}});
+            m_modp->addStmtsp(new AstFinal{flp, new AstIf{flp, condp, newFinalFailp(assertp)}});
         }
 
         // Clear userp on every vertex before vertexData is destroyed.
@@ -3693,10 +3836,41 @@ class AssertNfaVisitor final : public VNVisitor {
         }
     }
 
-    static bool hasMultiCycleExpr(const AstNode* nodep) {
-        return nodep->exists([](const AstNode* np) {
-            if (const auto* const ep = VN_CAST(np, NodeExpr)) return ep->isMultiCycleSva();
+    // First subroutine call match item in a property, or nullptr
+    static const AstNode* matchItemCall(const AstNode* nodep) {
+        // Calls are not executed at the end points of their sequence (IEEE 1800-2023 16.11). Any
+        // other match item is an assignment by here, as V3LinkInc lowers increments.
+        const AstNode* callp = nullptr;
+        nodep->exists([&callp](const AstExprStmt* exprStmtp) {
+            for (const AstNode* stmtp = exprStmtp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+                if (!VN_IS(stmtp, Assign)) {
+                    callp = stmtp;
+                    return true;
+                }
+            }
             return false;
+        });
+        return callp;
+    }
+
+    // Report a goto or nonconsecutive repetition in nodep with a sequence operand, true if any
+    static bool reportSequenceRepOperand(const AstNode* nodep) {
+        // Their operand is an expression (IEEE 1800-2023 16.9.2). Checked after sequence instances
+        // are inlined, as an instance or an untyped formal argument may hide a sequence.
+        return nodep->exists([](const AstNodeExpr* repp) {
+            const AstNodeExpr* operandp = nullptr;
+            const char* kindp = nullptr;
+            if (const AstSGotoRep* const gotop = VN_CAST(repp, SGotoRep)) {
+                operandp = gotop->exprp();
+                kindp = "Goto";
+            } else if (const AstSNonConsRep* const nonConsp = VN_CAST(repp, SNonConsRep)) {
+                operandp = nonConsp->exprp();
+                kindp = "Nonconsecutive";
+            }
+            if (!operandp || !hasMultiCycleExpr(operandp)) return false;
+            repp->v3error(kindp << " repetition operand must be a boolean expression,"
+                                   " but is a sequence (IEEE 1800-2023 16.9.2)");
+            return true;
         });
     }
 
@@ -3928,16 +4102,57 @@ class AssertNfaVisitor final : public VNVisitor {
         }
     }
 
-    // Replace one VarRef to a captured local var with $past(rhs, K)
-    // (or rhs inline when K == 0). No-op if refp is not in matchMap.
-    void substituteMatchItemRef(AstVarRef* refp, unsigned K,
-                                const std::unordered_map<const AstVar*, AstNodeExpr*>& matchMap) {
-        const auto it = matchMap.find(refp->varp());
-        if (it == matchMap.end()) return;
-        AstNodeExpr* newp = it->second->cloneTreePure(false);
-        if (K > 0) {
-            AstConst* const ticksp = new AstConst{refp->fileline(), AstConst::WidthedValue{}, 32,
-                                                  static_cast<uint32_t>(K)};
+    // Value of a local variable assigned by a lowered match item
+    struct MatchItemValue final {
+        // Assigned expression, with earlier local variables substituted, or nullptr if assigned
+        // before the last variable-length subsequence
+        AstNodeExpr* rhsp;
+        unsigned cycle;  // Cycle of the assignment, relative to the start of the antecedent
+    };
+    // State of a match item lowering walk
+    struct MatchItemWalk final {
+        std::unordered_map<const AstVar*, MatchItemValue> values;
+        const char* wherep = "property";  // Part of the property being walked
+        const AstNode* barrierp = nullptr;  // Last variable-length subsequence
+        const char* barrierWherep = nullptr;  // Part of the property containing barrierp
+    };
+
+    // True if exprStmtp is a match item
+    static bool isMatchItem(const AstExprStmt* exprStmtp) {
+        // V3Width also creates an ExprStmt assigning a temporary, e.g. for 'inside' with an
+        // impure left-hand side. Subroutine call match items were rejected by matchItemCall.
+        const AstVarRef* const lhsRefp
+            = VN_CAST(VN_AS(exprStmtp->stmtsp(), Assign)->lhsp(), VarRef);
+        return !lhsRefp || lhsRefp->varp()->varType() != VVarType::XTEMP;
+    }
+    // True if nodep contains a match item
+    static bool hasMatchItem(const AstNode* nodep) {
+        return nodep->exists([](const AstExprStmt* exprStmtp) { return isMatchItem(exprStmtp); });
+    }
+
+    // Report a local variable used across variable-length subsequence nodep
+    static void unsupportedAcross(const AstNode* nodep, const char* wherep) {
+        nodep->v3warn(E_UNSUPPORTED, "Unsupported: property local variable used across "
+                                         << (VN_IS(nodep, SExpr) ? "non-constant cycle delay"
+                                                                 : "composite sequence operator")
+                                         << " in " << wherep << " (IEEE 1800-2023 16.10)");
+    }
+
+    // Replace a VarRef to a captured local var at cycle K, returning the replacement
+    AstNodeExpr* substituteMatchItemRef(AstVarRef* refp, unsigned K, const MatchItemWalk& walk) {
+        // The replacement is $past(rhs, ticks since the assignment), or rhs inline in the same
+        // cycle. No-op if refp is not to a captured local var.
+        const auto it = walk.values.find(refp->varp());
+        if (it == walk.values.end()) return refp;
+        if (!it->second.rhsp) {
+            unsupportedAcross(walk.barrierp, walk.barrierWherep);
+            return nullptr;
+        }
+        AstNodeExpr* newp = it->second.rhsp->cloneTreePure(false);
+        const unsigned ticks = K - it->second.cycle;
+        if (ticks > 0) {
+            AstConst* const ticksp
+                = new AstConst{refp->fileline(), AstConst::WidthedValue{}, 32, ticks};
             AstPast* const pastp = new AstPast{refp->fileline(), newp, ticksp, nullptr,
                                                /* propertyTiming */ true};
             pastp->dtypeFrom(newp);
@@ -3945,167 +4160,124 @@ class AssertNfaVisitor final : public VNVisitor {
         }
         refp->replaceWith(newp);
         VL_DO_DANGLING(pushDeletep(refp), refp);
-        return;
+        return newp;
     }
 
-    // Walk a consequent or the rest of a sequence after a match item, returning its cycle length
-    int walkSubstituteMatchItems(AstNodeExpr* nodep, unsigned K,
-                                 const std::unordered_map<const AstVar*, AstNodeExpr*>& matchItems,
-                                 const char* wherep) {
-        // The walk is described by wherep. Returns -1 on failure.
-        // Substitute each VarRef to a captured local var with $past(rhs, K) (or rhs inline when K
-        // == 0). Report E_UNSUPPORTED on non-constant delays or composite sequence operators.
+    // Lower the match items of a sequence starting at cycle K, returning its cycle length
+    int walkSubstituteMatchItems(AstNodeExpr*& nodep, unsigned K, MatchItemWalk& walk) {
+        // Walks in time order (IEEE 1800-2023 16.10). Returns -1 on failure.
+        // Each local variable a match item assigns is recorded in walk, each later reference to
+        // it is substituted (see substituteMatchItemRef), and the match item is replaced by its
+        // sequence, updating nodep.
+        // Only the cycles from an assignment to a reference matter, so a variable-length
+        // subsequence (range delay or composite operator) is supported, but values assigned
+        // before it can no longer be referenced. It counts as zero cycles, as the cycles after it
+        // are only compared with each other.
         if (AstSExpr* const sexprp = VN_CAST(nodep, SExpr)) {
             // IEEE 1800-2023 16.9.2: cycle_delay's lhsp is a constant_expression
             // and the delay form in a sequence is always `##N`, folded by
-            // V3Const + V3Param before V3AssertNfa. Range form `##[m:n]` is the
-            // only user-visible reject here.
+            // V3Const + V3Param before V3AssertNfa.
             AstDelay* const delayp = VN_AS(sexprp->delayp(), Delay);
             UASSERT_OBJ(delayp->isCycleDelay() && VN_IS(delayp->lhsp(), Const), sexprp,
                         "SVA cycle delay must have a constant lhsp");
-            if (delayp->isRangeDelay()) {
-                sexprp->v3warn(E_UNSUPPORTED, "Unsupported: property local variable used across "
-                                              "non-constant cycle delay in "
-                                                  << wherep << " (IEEE 1800-2023 16.10)");
-                return -1;
-            }
-            const unsigned delayCycles = VN_AS(delayp->lhsp(), Const)->toUInt();
             int preLen = 0;
-            const std::unordered_map<const AstVar*, AstNodeExpr*>* bodyItemsp = &matchItems;
-            std::unordered_map<const AstVar*, AstNodeExpr*> reassignedItems;
-            if (AstNodeExpr* const prep = sexprp->preExprp()) {
-                preLen = walkSubstituteMatchItems(prep, K, matchItems, wherep);
+            if (AstNodeExpr* prep = sexprp->preExprp()) {
+                preLen = walkSubstituteMatchItems(prep, K, walk);
                 if (preLen < 0) return -1;
-                // A match item here reassigns its variables for the rest
-                if (const AstExprStmt* const stmtp = assignMatchItem(prep)) {
-                    reassignedItems = matchItems;
-                    for (const auto& itemr : matchItemsOf(stmtp)) {
-                        reassignedItems.erase(itemr.first);
-                    }
-                    bodyItemsp = &reassignedItems;
-                }
             }
-            const int bodyLen = walkSubstituteMatchItems(sexprp->exprp(), K + preLen + delayCycles,
-                                                         *bodyItemsp, wherep);
+            unsigned delayCycles = 0;
+            if (delayp->isRangeDelay()) {
+                setMatchItemBarrier(sexprp, walk);
+            } else {
+                delayCycles = VN_AS(delayp->lhsp(), Const)->toUInt();
+            }
+            AstNodeExpr* bodyp = sexprp->exprp();
+            const int bodyLen = walkSubstituteMatchItems(bodyp, K + preLen + delayCycles, walk);
             if (bodyLen < 0) return -1;
             return preLen + delayCycles + bodyLen;
         }
-        if (nodep->isMultiCycleSva()) {
-            nodep->v3warn(E_UNSUPPORTED, "Unsupported: property local variable used across "
-                                         "composite sequence operator in "
-                                             << wherep << " (IEEE 1800-2023 16.10)");
-            return -1;
+        AstExprStmt* const exprStmtp = VN_CAST(nodep, ExprStmt);
+        if (exprStmtp && isMatchItem(exprStmtp)) {
+            // IEEE 1800-2023 16.10 BNF requires `(expr, match_item {, match_item})`
+            // with at least one match item; V3LinkParse only emits ExprStmt for
+            // this form, and matchItemCall rejected subroutine call items.
+            // The items are executed in order at the end of the sequence.
+            AstNodeExpr* resultp = exprStmtp->resultp();
+            const int len = walkSubstituteMatchItems(resultp, K, walk);
+            if (len < 0) return -1;
+            for (AstNode* stmtp = exprStmtp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+                AstAssign* const assignp = VN_AS(stmtp, Assign);
+                const AstVarRef* const lhsRefp = VN_CAST(assignp->lhsp(), VarRef);
+                if (!lhsRefp) {
+                    assignp->v3warn(E_UNSUPPORTED, "Unsupported: match item assigning part of a"
+                                                   " property local variable");
+                    return -1;
+                }
+                AstNodeExpr* rhsp = assignp->rhsp();
+                if (walkSubstituteMatchItems(rhsp, K + len, walk) < 0) return -1;
+                walk.values[lhsRefp->varp()] = {rhsp, K + len};
+            }
+            // The values stay owned by exprStmtp, which is only deleted after this pass
+            exprStmtp->replaceWith(resultp->unlinkFrBack());
+            VL_DO_DANGLING(pushDeletep(exprStmtp), exprStmtp);
+            nodep = resultp;
+            return len;
+        }
+        // A match item, or a reference in a multi-cycle operand, below another operator, e.g. an
+        // implication, is not lowered
+        const bool nestedMatchItem = hasMatchItem(nodep);
+        if (nestedMatchItem || hasMultiCycleExpr(nodep)) {
+            if (nestedMatchItem || nodep->exists([&walk](const AstVarRef* refp) {
+                    return walk.values.count(refp->varp()) > 0;
+                })) {
+                unsupportedAcross(nodep, walk.wherep);
+                return -1;
+            }
+            setMatchItemBarrier(nodep, walk);
+            return 0;
         }
         std::vector<AstVarRef*> refs;
-        nodep->foreach([&refs](AstVarRef* p) {
-            if (p->access().isReadOnly()) refs.push_back(p);
-        });
-        for (AstVarRef* const refp : refs) substituteMatchItemRef(refp, K, matchItems);
+        nodep->foreach([&refs](AstVarRef* p) { refs.push_back(p); });
+        for (AstVarRef* const refp : refs) {
+            AstNodeExpr* const newp = substituteMatchItemRef(refp, K, walk);
+            if (!newp) return -1;
+            if (refp == nodep) nodep = newp;
+        }
         return 0;
     }
 
-    // The match items if they only assign local variables, else nullptr
-    static AstExprStmt* assignMatchItem(AstNode* nodep) {
-        // Subroutine call match items (IEEE 1800-2023 16.11) stay side effects
-        AstExprStmt* const stmtp = VN_CAST(nodep, ExprStmt);
-        if (!stmtp) return nullptr;
-        for (const AstNode* const itemp : stmtp->stmtspList()) {
-            if (!VN_IS(itemp, Assign)) return nullptr;
-        }
-        return stmtp;
-    }
-    // Map each local variable assigned by a match item to its value
-    static std::unordered_map<const AstVar*, AstNodeExpr*>
-    matchItemsOf(const AstExprStmt* exprStmtp) {
-        // IEEE 1800-2023 16.10 BNF requires `(expr, match_item {, match_item})`
-        // with at least one match item; V3LinkParse only emits ExprStmt for
-        // this form and only emits AstAssign with VarRef LHS for each item.
-        std::unordered_map<const AstVar*, AstNodeExpr*> matchItems;
-        for (AstNode* const stmtp : exprStmtp->stmtspList()) {
-            AstAssign* const assignp = VN_AS(stmtp, Assign);
-            AstVarRef* const lhsRefp = VN_AS(assignp->lhsp(), VarRef);
-            matchItems[lhsRefp->varp()] = assignp->rhsp();
-        }
-        return matchItems;
+    // Record variable-length subsequence nodep, after which earlier values are unknown
+    static void setMatchItemBarrier(const AstNode* nodep, MatchItemWalk& walk) {
+        for (auto& it : walk.values) it.second.rhsp = nullptr;
+        walk.barrierp = nodep;
+        walk.barrierWherep = walk.wherep;
     }
 
-    // Lower match items followed by a cycle delay in a sequence, true if E_UNSUPPORTED emitted
-    bool liftSeqMatchItems(AstNode* bodyp) {
-        // See IEEE 1800-2023 16.10.
-        // As liftMatchItemSubstitutions does for an implication: in `(b, v = e) ##N s` each
-        // reference to v in s is replaced with $past(e, K), and the match item is removed.
-        // Outermost first, so a reference in a later match item is substituted too. A reference
-        // left over elsewhere, e.g. in a consequent after a multi-cycle antecedent, is
-        // unsupported.
-        std::vector<AstSExpr*> sexprps;
-        bodyp->foreach([&](AstSExpr* sexprp) {
-            if (assignMatchItem(sexprp->preExprp())) sexprps.push_back(sexprp);
-        });
-        if (sexprps.empty()) return false;
-        std::unordered_set<const AstVar*> liftedVars;
-        for (AstSExpr* const sexprp : sexprps) {
-            AstExprStmt* const exprStmtp = VN_AS(sexprp->preExprp()->unlinkFrBack(), ExprStmt);
-            const std::unordered_map<const AstVar*, AstNodeExpr*> matchItems
-                = matchItemsOf(exprStmtp);
-            for (const auto& itemr : matchItems) liftedVars.emplace(itemr.first);
-            // Walk with the match item removed: the rest starts at the delay
-            const bool failed = walkSubstituteMatchItems(sexprp, 0, matchItems, "sequence") < 0;
-            sexprp->preExprp(exprStmtp->resultp()->unlinkFrBack());
-            VL_DO_DANGLING(pushDeletep(exprStmtp), exprStmtp);
-            if (failed) return true;
+    // Lower match-item assignments in a property, true if E_UNSUPPORTED was emitted
+    bool liftMatchItemSubstitutions(PropertyParts& parts, AstNodeExpr*& seqBodyp) {
+        // Done before NFA construction. On E_UNSUPPORTED the caller must replace the body with
+        // BitFalse and bail.
+        // Without this, an AstExprStmt(<x = rhs_expr>, seqExpr) survives into every NFA edge as a
+        // continuous-alias side-effect, so the local-var temp tracks the current cycle's rhs_expr
+        // rather than the match-item cycle's value -- wrong for any reference in a later cycle
+        // (issue #7587). Each later reference to the local var is replaced with
+        // `$past(rhs_expr, K)` where K is the number of cycles since the match item; for the
+        // consequent this includes the rest of the antecedent, and one cycle for `|=>`.
+        if (!hasMatchItem(seqBodyp) && !(parts.triggerExprp && hasMatchItem(parts.triggerExprp)))
+            return false;
+        MatchItemWalk walk;
+        int length = 0;
+        if (parts.hasImplication) {
+            walk.wherep = "antecedent";
+            length = walkSubstituteMatchItems(parts.triggerExprp, 0, walk);
+            if (length >= 0 && !parts.isOverlapped) ++length;
+            walk.wherep = "consequent";
         }
-        // A match item ending a sequence is dropped if no reference reads its variables
-        std::vector<AstExprStmt*> endps;
-        bodyp->foreach([&](AstExprStmt* stmtp) {
-            if (VN_IS(stmtp->backp(), SExpr) && assignMatchItem(stmtp)) endps.push_back(stmtp);
-        });
-        for (AstExprStmt* const stmtp : endps) {
-            const std::unordered_map<const AstVar*, AstNodeExpr*> matchItems = matchItemsOf(stmtp);
-            if (bodyp->exists([&](const AstVarRef* refp) {
-                    return refp->access().isReadOrRW() && matchItems.count(refp->varp());
-                })) {
-                continue;
-            }
-            stmtp->replaceWith(stmtp->resultp()->unlinkFrBack());
-            VL_DO_DANGLING(pushDeletep(stmtp), stmtp);
-        }
-        VIsCached::clearCacheTree();
-        const AstVarRef* leftp = nullptr;
-        bodyp->exists([&](const AstVarRef* refp) {
-            if (liftedVars.count(refp->varp())) leftp = refp;
-            return leftp != nullptr;
-        });
-        if (!leftp) return false;
-        leftp->v3warn(E_UNSUPPORTED, "Unsupported: local variable referenced outside the"
-                                     " sequence of its match item (IEEE 1800-2023 16.10)");
-        return true;
-    }
-
-    // Lower property-local match-item assignments before NFA construction.
-    // Without this, the antecedent's AstExprStmt(<x = rhs_expr>, antBool)
-    // survives into every NFA edge as a continuous-alias side-effect, so the
-    // local-var temp tracks the current cycle's rhs_expr rather than the
-    // antecedent-match cycle's value -- wrong for `|-> ##N` and `|=> ##N`
-    // with N > 0 (issue #7587). Each consequent reference to the local var
-    // is replaced with `$past(rhs_expr, K)` where K = (overlapped ? 0 : 1)
-    // plus any accumulated `##N` delay. Returns true if E_UNSUPPORTED was
-    // emitted; caller must replace the body with BitFalse and bail.
-    bool liftMatchItemSubstitutions(PropertyParts& parts, AstNodeExpr* seqBodyp) {
-        if (!parts.hasImplication) return false;
-        AstExprStmt* const exprStmtp = VN_CAST(parts.triggerExprp, ExprStmt);
-        if (!exprStmtp) return false;
-        const unsigned startK = parts.isOverlapped ? 0 : 1;
-        const int length
-            = walkSubstituteMatchItems(seqBodyp, startK, matchItemsOf(exprStmtp), "consequent");
+        if (length >= 0) length = walkSubstituteMatchItems(seqBodyp, length, walk);
         // Match-item substitution / strip mutates ancestor purity. Release
         // builds don't auto-clear caches on edits, so refresh here.
         VIsCached::clearCacheTree();
-        if (length < 0) return true;
-        AstNodeExpr* const antBoolp = exprStmtp->resultp()->unlinkFrBack();
-        exprStmtp->replaceWith(antBoolp);
-        VL_DO_DANGLING(pushDeletep(exprStmtp), exprStmtp);
-        parts.triggerExprp = antBoolp;
-        return false;
+        return length < 0;
     }
 
     // Outcome counts for a property if/case are wrong in an outcome-multiplying
@@ -4132,6 +4304,10 @@ class AssertNfaVisitor final : public VNVisitor {
 
         inlineNestedPropertyRefs(assertp->propp());
         inlineAllSequenceRefs(assertp->propp());
+        if (reportSequenceRepOperand(assertp->propp())) {
+            VL_DO_DANGLING(pushDeletep(assertp->unlinkFrBack()), assertp);
+            return nullptr;
+        }
 
         if (AstPropSpec* const specp = VN_CAST(assertp->propp(), PropSpec)) {
             if (hoistClockedSeq(specp)) return nullptr;
@@ -4167,6 +4343,30 @@ class AssertNfaVisitor final : public VNVisitor {
             assertp->v3warn(E_UNSUPPORTED,
                             "Unsupported: property instance inside a multi-cycle property "
                             "expression");
+            VL_DO_DANGLING(pushDeletep(assertp->unlinkFrBack()), assertp);
+            return nullptr;
+        }
+        if (const AstNode* const callp = matchItemCall(propp)) {
+            callp->v3warn(E_UNSUPPORTED, "Unsupported: subroutine call match item in a multi-cycle"
+                                         " property (IEEE 1800-2023 16.11)");
+            VL_DO_DANGLING(pushDeletep(assertp->unlinkFrBack()), assertp);
+            return nullptr;
+        }
+        // Match items in a repetition update the attempt's local variables at each iteration,
+        // the value flowing into the next one (IEEE 1800-2023 16.10), which is not modeled.
+        // Checked before the match items are lowered, which would report it less precisely.
+        const AstNodeExpr* itemRepp = nullptr;
+        propp->exists([&](const AstNodeExpr* repp) {
+            if (!VN_IS(repp, SConsRep) && !VN_IS(repp, SGotoRep) && !VN_IS(repp, SNonConsRep)) {
+                return false;
+            }
+            if (!hasMatchItem(repp)) return false;
+            itemRepp = repp;
+            return true;
+        });
+        if (itemRepp) {
+            itemRepp->v3warn(E_UNSUPPORTED, "Unsupported: sequence match item in repetition"
+                                            " (IEEE 1800-2023 16.10)");
             VL_DO_DANGLING(pushDeletep(assertp->unlinkFrBack()), assertp);
             return nullptr;
         }
@@ -4300,7 +4500,7 @@ class AssertNfaVisitor final : public VNVisitor {
 
         // Substitute property-local match-item refs in consequent with
         // $past(rhs, K) before NFA build (IEEE 1800-2023 16.10).
-        if (liftMatchItemSubstitutions(parts, seqBodyp) || liftSeqMatchItems(propp->propp())) {
+        if (liftMatchItemSubstitutions(parts, seqBodyp)) {
             AstPropSpec* const psp = VN_CAST(assertp->propp(), PropSpec);
             UASSERT_OBJ(psp, assertp, "Concurrent assertion must have PropSpec");
             replaceBodyOnBuildError(assertp->fileline(), psp, /*errorEmitted=*/true);
@@ -4308,6 +4508,7 @@ class AssertNfaVisitor final : public VNVisitor {
         }
 
         AstCover* const coverp = VN_CAST(assertp, Cover);
+        AstAssert* const assertAssertp = VN_CAST(assertp, Assert);
         const bool isCoverSeq = coverp && coverp->isCoverSeq();
         // A sequence event control is not an assertion directive; no default
         // disable iff, no assertion control
@@ -4365,6 +4566,8 @@ class AssertNfaVisitor final : public VNVisitor {
             VL_RESTORER(m_sampledValueClockp);
             m_sampledValueClockp = senTreep;
             iterate(propp->propp());
+            // The fail action may also run in the end-of-simulation final block, with no clock
+            if (assertAssertp) iterateAndNextNull(assertAssertp->failsp());
         }
 
         FileLine* const flp = assertp->fileline();
@@ -4373,9 +4576,9 @@ class AssertNfaVisitor final : public VNVisitor {
         // A vacuous success fails a negated assertion (IEEE 1800-2023 16.12.3), so a cover,
         // counting passes, needs none; a negated property if/case is reported below instead
         const bool trackVacuous = negated && !coverp && !propertyControlp;
-        SvaNfaBuilder builder{graph,       m_modp,     m_propTempNames,
-                              isCoverSeq,  isSeqEvent, coverp != nullptr,
-                              trackVacuous};
+        SvaNfaBuilder builder{graph,      m_modp,      m_propTempNames,
+                              isCoverSeq, isSeqEvent,  coverp != nullptr,
+                              negated,    trackVacuous};
 
         const BuildResult result = buildAssertionGraph(builder, graph, seqBodyp, parts, flp);
         if (result.valid()) wireMatchAndMidSources(graph, result, flp);
@@ -4405,7 +4608,6 @@ class AssertNfaVisitor final : public VNVisitor {
             return;
         }
 
-        AstAssert* const assertAssertp = VN_CAST(assertp, Assert);
         const bool splitImplicationPasssp = assertAssertp && assertAssertp->passsp()
                                             && parts.hasImplication
                                             && canSplitImplicationPassActions(parts);
