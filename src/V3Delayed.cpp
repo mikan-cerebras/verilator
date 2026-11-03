@@ -1229,7 +1229,8 @@ class DelayedVisitor final : public VNVisitor {
     CFuncCache* callCache(AstNodeCCall* const nodep) {
         const std::vector<AstCFunc*>& cfuncps = m_callTargetsp->getTargets(nodep);
         if (cfuncps.size() == 1) return calledCache(cfuncps.front());
-        // The possible functions depend only on the called function, so share their links
+        // Several targets only for a dynamically dispatched call, whose targets depend only on
+        // the called function, so share their links
         CFuncCache& cache = m_virtualCallsCache[nodep->funcp()];
         if (!cache.m_visited) {
             cache.m_visited = true;
