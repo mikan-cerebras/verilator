@@ -3608,7 +3608,7 @@ class ConstraintExprVisitor final : public VNVisitor {
         // A single soft item under 'if' without 'else' stays soft, as made by hoistGuardedSofts
         const AstConstraintExpr* const softp = VN_CAST(nodep->thensp(), ConstraintExpr);
         const bool isSoft = softp && softp->isSoft() && !softp->nextp() && !nodep->elsesp();
-        if (!m_wantSingle && !isSoft) {
+        if (foldOwner && !isSoft) {
             AstNode* lastp = nodep;
             hoistGuardedSofts(lastp, nodep, nullptr);
         }
