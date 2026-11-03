@@ -28,7 +28,7 @@ test.file_grep(prefix + "___024root__0.cpp", r'vlSelfRef\.t__DOT__gen__BRA__\d+_
 test.file_grep(prefix + "__Syms__Slow.cpp",
                r'offsetof\(Vt_emit_memb_limit_triv___024root, t__DOT__pub\)')
 # At most 3*3 members (sub__N9 has exactly 3*3), and class members: anonymous structs, as before
-for name in ["_sub__N9", "___024unit__03a__03aBase__Vclpkg"]:
+for name in ["_sub__N9", "___024unit__03A__03ABase__Vclpkg"]:
     test.file_grep_not(prefix + name + ".h", r'\} __Vg')
     test.file_grep(prefix + name + ".h", r'struct \{')
 
