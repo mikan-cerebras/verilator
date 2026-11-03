@@ -151,10 +151,12 @@ public:
     bool isDpiLogicVec() const;  // DPI uses svLogicVecVal
     bool isDpiPrimitive() const { return !isDpiBitVec() && !isDpiLogicVec(); }
     virtual bool isFourstate() const;
+    // Whether this type, or the elements of an unpacked array, are 4-state
+    bool isFourstateElement() const;
     // Ideally an IEEE $typename
     virtual string prettyDTypeName(bool) const { return prettyTypeName(); }
     string prettyDTypeNameQ(bool full = false) const { return "'" + prettyDTypeName(full) + "'"; }
-    string stateDTypeName() const { return this->isFourstate() ? "(4-state)" : "(2-state)"; }
+    string stateDTypeName() const { return isFourstateElement() ? "(4-state)" : "(2-state)"; }
     //
     // Changing the width may confuse the data type resolution, so must clear
     // TypeTable cache after use.
