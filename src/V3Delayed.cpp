@@ -254,32 +254,44 @@ class DelayedVisitor final : public VNVisitor {
     //  AstVarScope::user1p()   -> VarScopeInfo via m_vscpInfo
     //  AstVarScope::user2p()   -> AstVarRef*: First write reference to the Variable
     //  AstVarScope::user3p()   -> std::vector<WriteReference> via m_writeRefs;
+    //  AstSenTree::user2()     -> int: Order in the top scope, see DomainCmp
     const VNUser1InUse m_user1InUse;
     const VNUser2InUse m_user2InUse;
     const VNUser3InUse m_user3InUse;
 
+    // Order timing domains by position in the top scope, not by pointer, for stable output
+    struct DomainCmp final {
+        bool operator()(const AstSenTree* ap, const AstSenTree* bp) const {
+            return ap->user2() < bp->user2();
+        }
+    };
+    using DomainSet = std::set<AstSenTree*, DomainCmp>;
+    // Call graph node of a called function, or of a virtual call
     struct CFuncCache final {
-        VInsertionSet<AstSenTree*> m_timingDomains;  // What shall be added to m_timingDomains
-        std::set<AstCFunc*>
-            m_includes;  // CFuncs whose CFuncCache shall be included into this - this is used to
-                         // break cycles: A->B->A (instead of visiting A while it is still begin
-                         // visited B just marks that it includes A)
-        enum State : uint8_t {
-            UNINITIALIZED = 0,  // Not initialized members are empty
-            VISITING,  // Visiting - needed for breaking recursion
-            INITIALIZED,  // Members contains correct values
-        } m_state  // Current state of Cache
-        = UNINITIALIZED;
+        DomainSet m_domains;  // Timing domains awaited
+        std::set<CFuncCache*> m_callees;  // Caches of the functions called
+        bool m_visited = false;  // Whether the members are set
+        // Strongly connected component (SCC) of the call graph, see visitScc()
+        int m_sccIndex = -1;  // Order in the search, -1 if not visited yet
+        int m_sccLowLink = 0;  // Lowest order reachable in the search
+        bool m_onSccStack = false;  // Whether on m_sccStack
+        const DomainSet* m_reachedp = nullptr;  // Timing domains reached, directly or not
     };
 
-    // Caches what should be added to m_timingDomains because of calls to the AstCFunc (with
-    // recursive check of other AstCFuncs called from inside)
+    // Caches of called functions
     AstUser1Allocator<AstCFunc, CFuncCache> m_cfuncsCache;
     AstUser1Allocator<AstVarScope, VarScopeInfo> m_vscpInfo;
     AstUser3Allocator<AstVarScope, std::vector<WriteReference>> m_writeRefs;
 
     // STATE - across all visitors
     VInsertionSet<AstSenTree*> m_timingDomains;  // Timing resume domains
+    std::unordered_set<const DomainSet*> m_addedSets;  // Sets already in m_timingDomains
+    std::set<DomainSet> m_domainSets;  // Distinct sets of timing domains, shared
+    std::vector<CFuncCache*> m_sccStack;  // Caches visited by visitScc(), not in an SCC yet
+    int m_sccNextIndex = 0;  // Order of the next cache visited by visitScc()
+    CFuncCache* m_cachep = nullptr;  // Cache of the current called function, if any
+    // Caches of virtual calls, calling each possible function, by called function
+    std::unordered_map<const AstCFunc*, CFuncCache> m_virtualCallsCache;
     V3SharedTmps m_dlyTmps{"__Vdly", VVarType::BLOCKTEMP};  // Temporary variables
     // Commit queue data types, by element type and partial flag. Shared by all instances,
     // as m_dlyTmps only shares variables with the same data type.
@@ -287,7 +299,6 @@ class DelayedVisitor final : public VNVisitor {
 
     // To get the functions a virtual call may call
     const std::unique_ptr<V3CallTargets> m_callTargetsp;
-    std::vector<const AstCFunc*> m_callStack;  // Current callstack of AstCFuncs
 
     // STATE - for current visit position (use VL_RESTORER)
     AstActive* m_activep = nullptr;  // Current activate
@@ -317,7 +328,7 @@ class DelayedVisitor final : public VNVisitor {
     VDouble0 m_nSchemeValueQueuesPartial;  //  Number of variables using Scheme::ValueQueuePartial
     VDouble0 m_nSharedSetFlags;  // "Set" flags actually shared by Scheme::FlagShared variables
     VDouble0 m_nInitialNBA;  // Number of procedural blocks with initial NBA
-    VDouble0 m_nonInlinedCAwaitsWithSenTree;  // Count uses of not inlined co_awaits
+    VDouble0 m_nonInlinedCAwaitsWithSenTree;  // Count sentrees reached by called functions
 
     // METHODS
 
@@ -565,15 +576,57 @@ class DelayedVisitor final : public VNVisitor {
         return lhsp;
     }
 
-    void addCFuncCachedValues(const AstCFunc* const cfuncp,
-                              std::unordered_set<const AstCFunc*>& visited) {
-        if (!visited.insert(cfuncp).second) return;
-        CFuncCache& value = m_cfuncsCache(cfuncp);
-        m_timingDomains.insert(value.m_timingDomains.begin(), value.m_timingDomains.end());
-        m_nonInlinedCAwaitsWithSenTree += value.m_timingDomains.size();
-        for (const AstCFunc* const includedp : value.m_includes) {
-            addCFuncCachedValues(includedp, visited);
+    // Set the timing domains reached by a cache and by the caches it calls
+    void visitScc(CFuncCache* const cachep) {
+        // Tarjan's strongly connected components. An SCC is complete after all the SCCs it
+        // calls, so it gets the domains they reach once, instead of each caller walking the call
+        // graph again. Identical sets are shared, as the domains reached are often the same.
+        // The sets can total functions x domains, e.g. for a chain of tasks each awaiting its own
+        // event, but event controls in classes all share one domain, so they stay small.
+        cachep->m_sccIndex = cachep->m_sccLowLink = m_sccNextIndex++;
+        m_sccStack.push_back(cachep);
+        cachep->m_onSccStack = true;
+        for (CFuncCache* const calleep : cachep->m_callees) {
+            if (calleep->m_sccIndex < 0) {
+                visitScc(calleep);
+                cachep->m_sccLowLink = std::min(cachep->m_sccLowLink, calleep->m_sccLowLink);
+            } else if (calleep->m_onSccStack) {
+                cachep->m_sccLowLink = std::min(cachep->m_sccLowLink, calleep->m_sccIndex);
+            }
         }
+        if (cachep->m_sccLowLink != cachep->m_sccIndex) return;
+        std::vector<CFuncCache*> memberps;
+        do {
+            memberps.push_back(m_sccStack.back());
+            m_sccStack.pop_back();
+            memberps.back()->m_onSccStack = false;
+        } while (memberps.back() != cachep);
+        DomainSet domains;
+        std::set<const DomainSet*> calleeDomainps;
+        for (const CFuncCache* const memberp : memberps) {
+            domains.insert(memberp->m_domains.begin(), memberp->m_domains.end());
+            for (const CFuncCache* const calleep : memberp->m_callees) {
+                // Callees outside of the SCC are complete
+                if (calleep->m_reachedp) calleeDomainps.insert(calleep->m_reachedp);
+            }
+        }
+        const DomainSet* reachedp = nullptr;
+        if (domains.empty() && calleeDomainps.size() == 1) {
+            reachedp = *calleeDomainps.begin();
+        } else {
+            for (const DomainSet* const domainsp : calleeDomainps) {
+                domains.insert(domainsp->begin(), domainsp->end());
+            }
+            reachedp = &*m_domainSets.insert(std::move(domains)).first;
+        }
+        for (CFuncCache* const memberp : memberps) memberp->m_reachedp = reachedp;
+    }
+    // Add the timing domains a called function reaches, directly or not, to m_timingDomains
+    void addCalledDomains(CFuncCache* const calleep) {
+        if (!calleep->m_reachedp) visitScc(calleep);
+        if (!m_addedSets.insert(calleep->m_reachedp).second) return;  // Once per process
+        m_timingDomains.insert(calleep->m_reachedp->begin(), calleep->m_reachedp->end());
+        m_nonInlinedCAwaitsWithSenTree += calleep->m_reachedp->size();
     }
 
     // Create a temporary variable in the given 'scopep', with the given 'name', and with 'dtypep'
@@ -1024,41 +1077,31 @@ class DelayedVisitor final : public VNVisitor {
         return procedurep && procedurep->sentreep();
     }
 
-    // Visit AstCFunc from a AstNodeCCall - this is made into a separate quasi-visitor because
-    // AstCFunc that is not called from the code (e.g.: DPI exports) does not need to be visited
-    // this way. Also, not visiting such AstCFuncs allows to avoid caching results for them which
-    // this function does - which could lead to excessive memory usage
-    void visitCalledCFunc(AstCFunc* const nodep) {
-        CFuncCache& value = m_cfuncsCache(nodep);
-        switch (value.m_state) {
-        case CFuncCache::UNINITIALIZED: {
-            // Save current state
-            VL_RESTORER_CLEAR(m_timingDomains);
-
-            // Visit
-            value.m_state = CFuncCache::VISITING;
-            m_callStack.push_back(nodep);
-            {
-                VL_RESTORER(m_cfuncp);
-                m_cfuncp = nodep;
-                iterateChildren(nodep);
-            }
-            m_callStack.pop_back();
-            value.m_state = CFuncCache::INITIALIZED;
-
-            // Save a cache
-            std::swap(m_timingDomains, value.m_timingDomains);
-        } break;
-        case CFuncCache::VISITING: {
-            for (size_t i = m_callStack.size() - 1; m_callStack.at(i) != nodep; --i) {
-                m_cfuncsCache(m_callStack[i]).m_includes.insert(nodep);
-            }
-            return;  // Break recursion
+    // Return the cache of a called function, visiting the function the first time
+    CFuncCache* calledCache(AstCFunc* const nodep) {
+        CFuncCache& cache = m_cfuncsCache(nodep);
+        if (!cache.m_visited) {
+            // Mark before visiting, so recursive calls only link to it
+            cache.m_visited = true;
+            VL_RESTORER(m_cachep);
+            VL_RESTORER(m_cfuncp);
+            m_cachep = &cache;
+            m_cfuncp = nodep;
+            iterateChildren(nodep);
         }
-        case CFuncCache::INITIALIZED: break;
+        return &cache;
+    }
+    // Return the cache of a call, visiting the called functions the first time
+    CFuncCache* callCache(AstNodeCCall* const nodep) {
+        const std::vector<AstCFunc*>& cfuncps = m_callTargetsp->getTargets(nodep);
+        if (cfuncps.size() == 1) return calledCache(cfuncps.front());
+        // The possible functions depend only on the called function, so share their links
+        CFuncCache& cache = m_virtualCallsCache[nodep->funcp()];
+        if (!cache.m_visited) {
+            cache.m_visited = true;
+            for (AstCFunc* const cfuncp : cfuncps) cache.m_callees.insert(calledCache(cfuncp));
         }
-        std::unordered_set<const AstCFunc*> visited;
-        addCFuncCachedValues(nodep, visited);
+        return &cache;
     }
 
     // VISITORS
@@ -1199,6 +1242,8 @@ class DelayedVisitor final : public VNVisitor {
                                             || isProcedureWithSentreep<AstAlwaysObserved>(nodep)
                                             || isProcedureWithSentreep<AstAlwaysReactive>(nodep))
                                        && !containsClocled(m_activep->sentreep()->sensesp());
+        // Not clear(), which takes time of the bucket count, which never shrinks
+        m_addedSets = std::unordered_set<const DomainSet*>{};
         if (m_timingDomains.empty() && !addInitialTrigger) return;
 
         // There were some timing domains involved in the process. Add all of them as sensitivities
@@ -1217,7 +1262,7 @@ class DelayedVisitor final : public VNVisitor {
             if (domainp->sensesp())
                 senItemp = AstNode::addNext(senItemp, domainp->sensesp()->cloneTree(true));
         }
-        m_timingDomains.clear();
+        m_timingDomains = VInsertionSet<AstSenTree*>{};  // Not clear(), see m_addedSets
         // Add them to all nba targets we gathered in this process
         for (size_t i = firstNBAAddedIndex; i < m_nbas.size(); ++i) {
             m_vscpInfo(m_nbas[i].vscp).addSensitivity(senItemp);
@@ -1237,7 +1282,14 @@ class DelayedVisitor final : public VNVisitor {
         iterateChildren(nodep);
     }
     void visit(AstCAwait* nodep) override {
-        if (nodep->sentreep()) m_timingDomains.insert(nodep->sentreep());
+        if (AstSenTree* const sentreep = nodep->sentreep()) {
+            if (m_cachep) {
+                UASSERT_OBJ(sentreep->user2(), nodep, "Timing domain not in the top scope");
+                m_cachep->m_domains.insert(sentreep);
+            } else {
+                m_timingDomains.insert(sentreep);
+            }
+        }
         iterateChildren(nodep);
     }
     void visit(AstFireEvent* nodep) override {
@@ -1395,17 +1447,22 @@ class DelayedVisitor final : public VNVisitor {
     void visit(AstNodeCCall* const nodep) override {
         iterateChildren(nodep);
         // We need to visit bodies of non-inlined functions
-        for (AstCFunc* const cfuncp : m_callTargetsp->getTargets(nodep)) {
-            visitCalledCFunc(cfuncp);
+        CFuncCache* const calleep = callCache(nodep);
+        if (m_cachep) {
+            m_cachep->m_callees.insert(calleep);
+        } else {
+            addCalledDomains(calleep);
         }
     }
     void visit(AstCFunc* const nodep) override {
         const auto& value = m_cfuncsCache(nodep);
-        // Check whether it was already visited by visitCalledCFunc()
-        if (value.m_state != CFuncCache::UNINITIALIZED) return;
+        // Check whether it was already visited by calledCache()
+        if (value.m_visited) return;
+        // Its timing domains are those of the processes calling it, see calledCache()
+        CFuncCache unusedCache;
+        VL_RESTORER(m_cachep);
         VL_RESTORER(m_cfuncp);
-        // Its timing domains are those of the processes calling it, see visitCalledCFunc()
-        VL_RESTORER_CLEAR(m_timingDomains);
+        m_cachep = &unusedCache;
         m_cfuncp = nodep;
         iterateChildren(nodep);
     }
@@ -1421,6 +1478,10 @@ public:
     // CONSTRUCTORS
     explicit DelayedVisitor(AstNetlist* nodep)
         : m_callTargetsp{V3CallTargets::build()} {
+        int order = 0;
+        for (AstSenTree* const senTreep : nodep->topScopep()->senTreespList()) {
+            senTreep->user2(++order);
+        }
         iterate(nodep);
     }
     ~DelayedVisitor() override {
