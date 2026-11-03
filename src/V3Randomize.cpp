@@ -164,8 +164,8 @@ union RandomizeMode final {
 
 // Look through unpacked array dimensions to the element type
 static AstNodeDType* arrayElementDTypep(AstNodeDType* dtypep) {
-    dtypep = dtypep->skipRefp();
-    while (dtypep->isNonPackedArray()) dtypep = dtypep->subDTypep()->skipRefp();
+    dtypep = dtypep->skipRefToEnump();
+    while (dtypep->isNonPackedArray()) dtypep = dtypep->subDTypep()->skipRefToEnump();
     return dtypep;
 }
 
@@ -933,7 +933,6 @@ class ConstraintExprVisitor final : public VNVisitor {
     AstNodeFTask* m_prepareConstrainedArraysp = nullptr;  // Grow arrays for indexed struct access
     uint32_t* m_uniqueConstraintIdp = nullptr;  // Current ID of unique call
     V3UniqueNames& m_uniqueNames;  // Unique names of temporaries, and of blocks holding them
-    std::set<std::string> m_rangeConstrainedEnums;  // Solver names of range-constrained enums
     // First expression found under an inside index
     AstNode* m_firstExpressionInsideIndexp = nullptr;
     AstConstraintForeach* m_foreachp = nullptr;  // Innermost constraint-foreach being processed
@@ -1032,28 +1031,6 @@ class ConstraintExprVisitor final : public VNVisitor {
         }
     };
     NestedAccessPath* m_nestedAccessp = nullptr;  // Indicates state of nested access
-
-    // Emit enum range hard constraint for a single variable
-    AstNodeExpr* createEnumConstraint(FileLine* const fl, const std::string& smtName,
-                                      AstEnumDType* const enumDtp, AstVar* const genVarp) {
-        AstNodeModule* const genModp = VN_AS(genVarp->user2p(), NodeModule);
-        const int width = enumDtp->width();
-        std::string constraint = "(__Vbv (or";
-        for (AstEnumItem* const itemp : enumDtp->itemspList()) {
-            const AstConst* const vconstp = VN_AS(itemp->valuep(), Const);
-            if (vconstp->num().isFourState()) continue;  // The solver can't produce X/Z
-            constraint += " (= " + smtName + " (_ bv" + vconstp->num().toDecimalU() + " "
-                          + cvtToStr(width) + "))";
-        }
-        constraint += "))";
-        AstCMethodHard* const callp = new AstCMethodHard{
-            fl, new AstVarRef{fl, genModp, genVarp, VAccess::READWRITE}, VCMethod::RANDOMIZER_HARD,
-            new AstCExpr{fl, AstCExpr::Pure{}, "\"" + constraint + "\""}};
-        // hard() pin layout is asserted in EmitCFunc: the variable list is always pin 2
-        callp->addPinsp(new AstCExpr{fl, AstCExpr::Pure{}, "{\"" + smtName + "\"}"});
-        callp->dtypeSetVoid();
-        return callp;
-    };
 
     // Routes nested sub-objects with static rand vars when the outer class has none.
     AstVar* findStaticRandModeVarMember(AstClass* classp) const {
@@ -1989,23 +1966,6 @@ class ConstraintExprVisitor final : public VNVisitor {
         AstNodeModule* const classOrPackagep = nodep->classOrPackagep();
         const RandomizeMode randMode = {.asUQuad = varp->user1()};
         if (!randMode.usesMode && editFormat(nodep)) return;
-
-        // The selected member's type and solver name, so 'obj.e' is restricted too
-        // (IEEE 1800-2023 18.4). A nested array access has no fixed solver name.
-        AstEnumDType* const enumDtp
-            = m_nestedAccessp ? nullptr : VN_CAST(varp->dtypep()->skipRefToEnump(), EnumDType);
-        if (enumDtp && m_rangeConstrainedEnums.emplace(smtName).second) {
-            AstVar* genVarp = m_genp;
-            if (m_classp && m_classp->user3p()) genVarp = VN_AS(m_classp->user3p(), Var);
-            UASSERT_OBJ(genVarp, nodep, "No 'randomize' variable in m_genp or m_classp");
-            AstNodeExpr* enumRangeExprp
-                = createEnumConstraint(nodep->fileline(), smtName, enumDtp, genVarp);
-            AstBegin* targetp = m_inlineInitBlockp;
-            if (!targetp) {
-                targetp = newInitBlockp(getCreateConstraintSetupFunc(m_classp, m_memberMap));
-            }
-            targetp->addStmtsp(enumRangeExprp->makeStmt());
-        }
 
         VNRelinker relinker;
         nodep->unlinkFrBack(&relinker);
@@ -7254,12 +7214,45 @@ public:
 //######################################################################
 // Randomize method class functions
 
+// Restrict each solver variable of enum type, or array of enums, to the enum's values
+static void addEnumDomains(AstNetlist* nodep) {
+    // At each registration, after lowering, so registrations made or copied anywhere are
+    // covered: members reached through handles, elements of arrays, fields of object-array
+    // elements (IEEE 1800-2023 18.4). Enum fields of unpacked structs are not covered.
+    std::vector<AstCMethodHard*> writeVarps;
+    nodep->foreach([&](AstCMethodHard* const methodp) {
+        if (methodp->method() == VCMethod::RANDOMIZER_WRITE_VAR) writeVarps.push_back(methodp);
+    });
+    for (AstCMethodHard* const writeVarp : writeVarps) {
+        const AstEnumDType* const enumDtp
+            = VN_CAST(arrayElementDTypep(writeVarp->pinsp()->dtypep()), EnumDType);
+        if (!enumDtp) continue;
+        std::string domain = "(or";
+        for (const AstEnumItem* const itemp : enumDtp->itemspList()) {
+            const V3Number& num = VN_AS(itemp->valuep(), Const)->num();
+            if (num.isFourState()) continue;  // The solver can't produce X/Z
+            domain
+                += " (= __Ve (_ bv" + num.toDecimalU() + " " + cvtToStr(enumDtp->width()) + "))";
+        }
+        domain += ")";
+        FileLine* const fl = writeVarp->fileline();
+        AstNode* const namep = writeVarp->pinsp()->nextp()->nextp();  // After variable, width
+        AstCMethodHard* const domainp = new AstCMethodHard{
+            fl, writeVarp->fromp()->cloneTreePure(false), VCMethod::RANDOMIZER_ENUM_DOMAIN,
+            VN_AS(namep, NodeExpr)->cloneTreePure(false)};
+        domainp->addPinsp(new AstCExpr{fl, AstCExpr::Pure{}, "\"" + domain + "\""});
+        domainp->dtypeSetVoid();
+        VN_AS(writeVarp->backp(), StmtExpr)->addNextHere(domainp->makeStmt());
+    }
+}
+
 void V3Randomize::randomizeNetlist(AstNetlist* nodep) {
     UINFO(2, __FUNCTION__ << ":");
     {
         const RandomizeMarkVisitor markVisitor{nodep};
         const RandomizeVisitor randomizeVisitor{nodep};
     }
+    addEnumDomains(nodep);
     V3Global::dumpCheckGlobalTree("randomize", 0, dumpTreeEitherLevel() >= 3);
 }
 
