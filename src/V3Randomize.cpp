@@ -620,7 +620,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
         for (AstClass* const classp : m_classps) {
             if (!classp->user1()) continue;
             classp->foreachMember([&](AstClass* const ownerClassp, AstVar* const memberVarp) {
-                if (!memberVarp->rand().isRandomizable() || !isDynHandleArray(memberVarp)) return;
+                if (!memberVarp->rand().isRandomizable() || !isHandleArray(memberVarp)) return;
                 AstVarRef* const arrRefp = new AstVarRef{memberVarp->fileline(), ownerClassp,
                                                          memberVarp, VAccess::READ};
                 cloneElementConstraints(arrRefp, memberVarp->name(), classp);
@@ -744,10 +744,11 @@ class RandomizeMarkVisitor final : public VNVisitor {
         VL_DO_DANGLING(objp->deleteTree(), objp);
     }
 
-    // Whether varp is a dynamic array or queue of class handles
-    static bool isDynHandleArray(const AstVar* varp) {
+    // Whether varp is a fixed-size or dynamic array, or queue, of class handles
+    static bool isHandleArray(const AstVar* varp) {
         const AstNodeDType* const dtypep = varp->dtypep()->skipRefp();
-        return (VN_IS(dtypep, DynArrayDType) || VN_IS(dtypep, QueueDType))
+        return (VN_IS(dtypep, UnpackArrayDType) || VN_IS(dtypep, DynArrayDType)
+                || VN_IS(dtypep, QueueDType))
                && VN_IS(dtypep->subDTypep()->skipRefp(), ClassRefDType);
     }
     // Whether refp is a reference to the same member as pathp, through the same objects
@@ -771,7 +772,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
         // An array referenced by targetClassp's constraints is solved by targetClassp, not by
         // randomize() of each object, so the objects' constraints are solved there too
         // (IEEE 1800-2023 18.5.8), applied to each element by a foreach.
-        // arrRefp is a reference to the array (isDynHandleArray) of this or of a member
+        // arrRefp is a reference to the array (isHandleArray) of this or of a member
         // object.
         const AstMemberSel* const arrSelp = VN_CAST(arrRefp, MemberSel);
         AstVar* const arrVarp = arrSelp ? arrSelp->varp() : VN_AS(arrRefp, VarRef)->varp();
@@ -814,9 +815,23 @@ class RandomizeMarkVisitor final : public VNVisitor {
             }
             AstVar* const idxVarp
                 = new AstVar{fl, VVarType::BLOCKTEMP, "__Vi", arrVarp->findIntDType()};
-            AstCMethodHard* const elemp
-                = new AstCMethodHard{fl, arrRefp->cloneTree(false), VCMethod::ARRAY_AT,
-                                     new AstVarRef{fl, idxVarp, VAccess::READ}};
+            AstNodeExpr* elemp;
+            AstNodeExpr* idxp = new AstVarRef{fl, idxVarp, VAccess::READ};
+            if (const AstUnpackArrayDType* const unpackDtp
+                = VN_CAST(arrVarp->dtypep()->skipRefp(), UnpackArrayDType)) {
+                // foreach gives the declared index, a select takes the offset from the low one
+                if (const int lo = unpackDtp->lo()) {
+                    AstConst* const lop = new AstConst{fl, AstConst::WidthedValue{}, 32,
+                                                       static_cast<uint32_t>(lo)};
+                    lop->dtypeFrom(idxVarp);
+                    idxp = new AstSub{fl, idxp, lop};
+                    idxp->dtypeFrom(idxVarp);
+                }
+                elemp = new AstArraySel{fl, arrRefp->cloneTree(false), idxp};
+            } else {
+                elemp
+                    = new AstCMethodHard{fl, arrRefp->cloneTree(false), VCMethod::ARRAY_AT, idxp};
+            }
             elemp->dtypep(elemRefDtp);
             AstConstraint* const cloneConstrp
                 = cloneObjectConstraint(constrp, elemp, prefix, targetClassp);
@@ -863,7 +878,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
             std::vector<AstVar*> newPath = pathToClass;
             newPath.push_back(memberVarp);
             if (!memberClassRefp) {
-                if (!isDynHandleArray(memberVarp)) return;
+                if (!isHandleArray(memberVarp)) return;
                 AstNodeExpr* const arrRefp = buildMemberSelChain(rootVarRefp, newPath);
                 cloneElementConstraints(arrRefp, clonePathPrefix(rootVarRefp, newPath),
                                         targetClassp);
@@ -3204,15 +3219,18 @@ class ConstraintExprVisitor final : public VNVisitor {
             VL_DO_DANGLING(origp->deleteTree(), origp);
         }
     }
-    void renameArrayExpr(AstSFormatF* const newp) const {
+    // Name an element of an array of structs or objects the way the solver registers it
+    void renameArrayExpr(AstSFormatF* const newp, bool objectElem) const {
         if (m_structSel) {
             newp->name("%s.%s");
-            newp->exprsp()->nextp()->name("%x");
+            // Objects are registered with an unpadded index (createWriteVarForClassFields)
+            newp->exprsp()->nextp()->name(objectElem ? "%0x" : "%x");
         }
     }
     void visit(AstArraySel* nodep) override {
         if (editFormat(nodep)) return;
         FileLine* const fl = nodep->fileline();
+        const bool objectElem = VN_IS(nodep->dtypep()->skipRefp(), ClassRefDType);
         VNRelinker handle;
         const bool indexIsRand = isRandIndex(nodep->bitp());
         if (m_nestedAccess) {
@@ -3243,7 +3261,7 @@ class ConstraintExprVisitor final : public VNVisitor {
             AstNodeExpr* const indexp = newSmtIndexp(nodep->bitp()->unlinkFrBack(&handle), false);
             handle.relink(indexp);
             AstSFormatF* const newp = editSMT(nodep, nodep->fromp(), indexp);
-            renameArrayExpr(newp);
+            renameArrayExpr(newp, objectElem);
         } else {
             // Index is constant or non-rand -- format as hex literal.
             // Keep a pre-edit clone for the rand_mode hoist below.
@@ -3252,7 +3270,7 @@ class ConstraintExprVisitor final : public VNVisitor {
                 = new AstSFormatF{fl, "#x%8x", false, nodep->bitp()->unlinkFrBack(&handle)};
             handle.relink(indexp);
             AstSFormatF* const newp = editSMT(nodep, nodep->fromp(), indexp);
-            renameArrayExpr(newp);
+            renameArrayExpr(newp, objectElem);
             if (!newp || !hoistRandModeOverSelectAndMember(newp, origp)) {
                 VL_DO_DANGLING(origp->deleteTree(), origp);
             }
