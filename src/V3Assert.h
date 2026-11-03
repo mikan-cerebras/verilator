@@ -31,6 +31,8 @@ class V3UniqueNames;
 class V3AssertCommon final {
 public:
     static void collectDefaultDisable(AstNetlist* nodep) VL_MT_DISABLED;
+    // The default clocking declared directly in a module, or nullptr
+    static AstClocking* moduleDefaultClockingp(const AstNodeModule* modp) VL_MT_DISABLED;
     static void lowerSequenceEvents(AstNetlist* nodep) VL_MT_DISABLED;
     static string assertCtlGetCall(const char* query, VAssertType type,
                                    VAssertDirectiveType directiveType) VL_MT_DISABLED;
@@ -76,6 +78,8 @@ public:
         const std::unordered_map<const AstVar*, AstVar*>& localVarMap) VL_MT_DISABLED;
     // Reduce a whole property 'always p' to p
     static void reducePlainAlways(AstPropSpec* specp) VL_MT_DISABLED;
+    // Clock inferred from an always procedure, or nullptr (IEEE 1800-2023 16.14.6)
+    static AstSenItem* inferredClock(const AstAlways* alwaysp) VL_MT_DISABLED;
 };
 
 class V3Assert final {

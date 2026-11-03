@@ -150,6 +150,15 @@ void V3AssertCommon::collectDefaultDisable(AstNetlist* nodep) {
     { DefaultDisablePropagateVisitor{nodep}; }
 }
 
+AstClocking* V3AssertCommon::moduleDefaultClockingp(const AstNodeModule* modp) {
+    // It applies to the whole module, also to items before its declaration (IEEE 1800-2023 14.12)
+    for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+        AstClocking* const clockingp = VN_CAST(stmtp, Clocking);
+        if (clockingp && clockingp->isDefault()) return clockingp;
+    }
+    return nullptr;
+}
+
 void V3AssertCommon::lowerSequenceEvents(AstNetlist* nodep) {
     { SeqEventLowerVisitor{nodep}; }
     V3Global::dumpCheckGlobalTree("assertseqevent", 0, dumpTreeEitherLevel() >= 3);
@@ -636,6 +645,27 @@ void V3AssertCommon::reducePlainAlways(AstPropSpec* specp) {
     if (!alwaysp || !alwaysp->isPlainAlways()) return;
     alwaysp->replaceWith(alwaysp->propp()->unlinkFrBack());
     VL_DO_DANGLING(alwaysp->deleteTree(), alwaysp);
+}
+
+AstSenItem* V3AssertCommon::inferredClock(const AstAlways* alwaysp) {
+    // A single edge event none of whose variables is used in the procedure body. A use in an
+    // event, as in the clock that assertion lowering gives a sampled value function, is ignored.
+    AstSenItem* const itemp = alwaysp->sentreep() ? alwaysp->sentreep()->sensesp() : nullptr;
+    if (!itemp || itemp->nextp() || !itemp->edgeType().anEdge() || !alwaysp->stmtsp()) {
+        return nullptr;
+    }
+    const auto inEvent = [alwaysp](const AstNode* nodep) {
+        for (; nodep != alwaysp; nodep = nodep->aboveLoopp()) {
+            if (VN_IS(nodep, SenItem)) return true;
+        }
+        return false;
+    };
+    const bool usedInBody = itemp->sensp()->exists([&](const AstVarRef* clkRefp) {
+        return alwaysp->stmtsp()->existsAndNext([&](const AstVarRef* refp) {
+            return refp->varp() == clkRefp->varp() && !inEvent(refp);
+        });
+    });
+    return usedInBody ? nullptr : itemp;
 }
 
 //######################################################################
