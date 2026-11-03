@@ -103,23 +103,49 @@ class ArrDerived2 extends ArrBase;
   constraint c_d2 {foreach (a[i]) a[i].v != 7'd19;}
 endclass
 
-// Fixed-size arrays: constant index, foreach, ranges not starting at 0, over 16 elements
+// Fixed-size arrays: constant index, foreach, ranges not starting at 0
 class Fixed;
   rand Item a[2];
   rand Item b[1:2];
   rand Item c[3:1];
-  rand Item big[17];
   constraint c_g {
     a[1].v > 7'd16;
     foreach (b[i]) b[i].v > 7'd16;
     c[1].v > 7'd16;
-    big[1].v > 7'd16;
   }
   function new();
     foreach (a[i]) a[i] = new;
     foreach (b[i]) b[i] = new;
     foreach (c[i]) c[i] = new;
-    foreach (big[i]) big[i] = new;
+  endfunction
+endclass
+
+// Null elements have no object, so no constraints
+class Partial;
+  rand Item a[3];
+  rand Item d[];
+  constraint c_g {
+    a[0].v > 7'd16;
+    d[0].v > 7'd16;
+  }
+  function new();
+    a[0] = new;
+    a[2] = new;
+    d = new[3];
+    d[0] = new;
+    d[2] = new;
+  endfunction
+endclass
+
+// Over 16 objects: the element index in the solver names is not padded
+class Big;
+  rand Sub s[17];
+  constraint c_g {
+    s[1].x == 5'd7;
+    s[16].x == 5'd9;
+  }
+  function new();
+    foreach (s[i]) s[i] = new;
   endfunction
 endclass
 
@@ -237,16 +263,38 @@ module t;
   task automatic test_fixed;
     Fixed f = new;
     int randomize_result;
-    repeat (5) begin
+    repeat (10) begin
       randomize_result = f.randomize();
       `checkd(randomize_result, 1);
-      check_items('{f.a[0], f.c[2], f.c[3], f.big[0], f.big[16]}, 0, 128);
-      check_items('{f.a[1], f.b[1], f.b[2], f.c[1], f.big[1]}, 16, 128);
+      check_items('{f.a[0], f.c[2], f.c[3]}, 0, 128);
+      check_items('{f.a[1], f.b[1], f.b[2], f.c[1]}, 16, 128);
     end
+  endtask
+
+  task automatic test_partial;
+    Partial pa = new;
+    int randomize_result;
+    repeat (5) begin
+      randomize_result = pa.randomize();
+      `checkd(randomize_result, 1);
+      check_items('{pa.a[0], pa.d[0]}, 16, 128);
+      check_items('{pa.a[2], pa.d[2]}, 0, 128);
+    end
+  endtask
+
+  task automatic test_big;
+    Big b = new;
+    int randomize_result;
+    randomize_result = b.randomize();
+    `checkd(randomize_result, 1);
+    `checkd(b.s[1].x, 5'd7);
+    `checkd(b.s[16].x, 5'd9);
   endtask
 
   initial begin
     test_fixed();
+    test_partial();
+    test_big();
     test_dyn();
     test_queue();
     test_realloc();
