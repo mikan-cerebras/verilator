@@ -33,7 +33,7 @@ for filename in test.glob_some(test.obj_dir + "/*.h"):
 
 if n_decls < 10:
     test.error("Expected forward declarations of Syms, classes and cells, got " + str(n_decls))
-test.file_grep(test.obj_dir + "/" + test.vm_prefix + "___024unit__03a__03aClsB__Vclpkg.h",
-               r'#ifndef VL_FWD_' + test.vm_prefix + r'___024unit__03a__03aCommon\n')
+test.file_grep(test.obj_dir + "/" + test.vm_prefix + "___024unit__03A__03AClsB__Vclpkg.h",
+               r'#ifndef VL_FWD_' + test.vm_prefix + r'___024unit__03A__03ACommon\n')
 
 test.passes()
