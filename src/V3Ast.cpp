@@ -1591,18 +1591,22 @@ string AstNode::instanceStr() const {
     // in case we have some circular reference bug.
     constexpr unsigned maxIterations = 10000;
     unsigned iterCount = 0;
-    // Walk 'backp' chain
-    for (const AstNode* currp = this; currp; currp = currp->backp(), ++iterCount) {
+    // Walk 'backp' chain, but from a module, class or package to its parent, not to the
+    // previous module in the netlist, so code in a package or $unit class reports no instance
+    for (const AstNode* currp = this; currp;
+         currp = VN_IS(currp, NodeModule) ? currp->aboveLoopp() : currp->backp(), ++iterCount) {
         if (VL_UNCOVERABLE(iterCount >= maxIterations)) return "";  // LCOV_EXCL_LINE
         // Prefer the enclosing scope, if there is one. This is always under the enclosing module,
         // so just pick it up when encountered
         if (const AstScope* const scopep = VN_CAST(currp, Scope)) {
             return scopep->isTop() ? "" : "... note: In instance " + scopep->prettyNameQ();
         }
-        // If scopes don't exist, report an example instance of the enclosing module
-        if (const AstModule* const modp = VN_CAST(currp, Module)) {
-            const string instanceName = modp->someInstanceName();
-            return instanceName.empty() ? "" : "... note: In instance '" + instanceName + "'";
+        // If scopes don't exist, report an example instance of the enclosing module or
+        // interface
+        if (VN_IS(currp, Module) || VN_IS(currp, Iface)) {
+            const string instanceName = VN_AS(currp, NodeModule)->someInstanceName();
+            return instanceName.empty() ? ""
+                                        : "... note: In instance " + prettyNameQ(instanceName);
         }
     }
     return "";
