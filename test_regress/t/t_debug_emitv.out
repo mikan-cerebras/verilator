@@ -1810,20 +1810,20 @@ endmodule
 package p;
     logic pkgvar;
     function ident;
-        input int signed value;
-        begin : label10
+        input int value;
+        begin : label15
             ident = /*CRESET*/;
             ident = value;
-            disable label10;
+            disable label15;
         end
     endfunction
     function uses_const_func;
         logic [1:0]  v;
-        begin : label11
+        begin : label16
             uses_const_func = /*CRESET*/;
             v = /*CRESET*/;
             uses_const_func = 32'h2;
-            disable label11;
+            disable label16;
         end
     endfunction
 endpackage
