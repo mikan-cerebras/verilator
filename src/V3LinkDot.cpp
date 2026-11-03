@@ -1237,7 +1237,7 @@ class LinkDotFindVisitor final : public VNVisitor {
         // Any "Type::" reference in the function's IO are really "MovedToClass::" references
         if (nodep->fvarp()) moveExternFuncDeclRefs(nodep->fvarp(), classp);
         // A default argument value may be given only in the prototype (IEEE 1800-2023 8.24)
-        const VSymEnt* const protoSymp
+        VSymEnt* const protoSymp
             = m_statep->getNodeSym(classp)->findIdFlat("extern " + nodep->name());
         for (AstNode* const stmtp : nodep->stmtspList()) {
             AstVar* const portp = VN_CAST(stmtp, Var);
