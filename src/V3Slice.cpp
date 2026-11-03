@@ -107,13 +107,15 @@ class SliceVisitor final : public VNVisitor {
             return new AstCvtUnpackToUnpack{nodep->fileline(), elemp, subDTypep};
         } else if (const AstCvtPackedToArray* const cvtp = VN_CAST(nodep, CvtPackedToArray)) {
             UINFO(9, "  cloneCvtPackedToArray(" << elements << "," << elemIdx << ") " << nodep);
-            // The element's bits, the leftmost element taking the most significant bits
-            AstNodeExpr* const fromp = cvtp->fromp();
+            // The leftmost element takes the most significant bits
             AstNodeDType* const subDTypep = arrayp->subDTypep();
-            const int width = subDTypep->widthStream();
-            AstNodeExpr* const selp
-                = new AstSel{nodep->fileline(), fromp->cloneTree(false, needPure),
-                             fromp->width() - static_cast<int>(elemIdx + 1) * width, width};
+            const int elemWidth = subDTypep->widthStream();
+            const int lsb = static_cast<int>(elements - 1 - elemIdx) * elemWidth;
+            AstNodeExpr* fromp = cvtp->fromp()->cloneTree(false, needPure);
+            if (fromp->width() < lsb + elemWidth) {
+                fromp = new AstExtend{fromp->fileline(), fromp, lsb + elemWidth};
+            }
+            AstNodeExpr* const selp = new AstSel{nodep->fileline(), fromp, lsb, elemWidth};
             if (!VN_IS(subDTypep->skipRefp(), UnpackArrayDType)) return selp;
             return new AstCvtPackedToArray{nodep->fileline(), selp, subDTypep};
         } else if (AstCond* const snodep = VN_CAST(nodep, Cond)) {
@@ -155,7 +157,8 @@ class SliceVisitor final : public VNVisitor {
                 return resultSelp;
             }
         } else if (VN_IS(nodep, NodeVarRef) || VN_IS(nodep, NodeSel) || VN_IS(nodep, CMethodHard)
-                   || VN_IS(nodep, MemberSel) || VN_IS(nodep, StructSel)) {
+                   || VN_IS(nodep, MemberSel) || VN_IS(nodep, StructSel)
+                   || VN_IS(nodep, CvtQueueToUnpack)) {
             UINFO(9, "  cloneSel(" << elements << "," << elemIdx << ") " << nodep);
             const int leOffset = !arrayp->rangep()->ascending()
                                      ? arrayp->rangep()->elementsConst() - 1 - elemIdx
@@ -179,15 +182,22 @@ class SliceVisitor final : public VNVisitor {
         AstNode* stp = nodep->rhsp();
         const AstUnpackArrayDType* const arrayp = VN_CAST(dtp, UnpackArrayDType);
         if (!arrayp) return false;
-        if (VN_IS(stp, CvtPackedToArray)) return false;
+        // A slice target can only be written element by element
+        const bool lhsSlice = VN_IS(nodep->lhsp(), SliceSel);
+        if (VN_IS(stp, CvtPackedToArray) && !lhsSlice) return false;
         if (VN_IS(stp, CvtArrayToArray)) return false;
-        if (VN_IS(stp, CvtQueueToUnpack)) return false;
+        if (VN_IS(stp, CvtQueueToUnpack) && !lhsSlice) return false;
         if (VN_IS(stp, CReset)) return false;
 
-        // Any isSc variables must be expanded regardless of --fno-slice
+        // Any isSc variables must be expanded regardless of --fno-slice, as must an array
+        // pattern lvalue (e.g. an output port connection), which is not an lvalue in C++
         const bool hasSc
             = nodep->exists([&](const AstVarRef* refp) -> bool { return refp->varp()->isSc(); });
-        if (!hasSc && !v3Global.opt.fSlice()) {
+        const bool consLhs = VN_IS(nodep->lhsp(), ConsArray);
+        // Slicing would evaluate an impure side once per element, so copy the whole array,
+        // unless writing a slice, which is only done element by element
+        const bool impure = !nodep->lhsp()->isPure() || !nodep->rhsp()->isPure();
+        if (!hasSc && !lhsSlice && !consLhs && (!v3Global.opt.fSlice() || impure)) {
             m_okConsArray = true;  // VL_RESTORER in visit(AstNodeAssign)
             return false;
         }
@@ -195,7 +205,7 @@ class SliceVisitor final : public VNVisitor {
         // Skip optimization if array is too large
         const int elements = arrayp->rangep()->elementsConst();
         const int elementLimit = v3Global.opt.fSliceElementLimit();
-        if (elements > elementLimit && elementLimit > 0) {
+        if (!lhsSlice && !consLhs && elements > elementLimit && elementLimit > 0) {
             ++m_statSliceElementSkips;
             m_okConsArray = true;  // VL_RESTORER in visit(AstNodeAssign)
             return false;
@@ -235,6 +245,27 @@ class SliceVisitor final : public VNVisitor {
         return true;
     }
 
+    // Split an assignment to a structure pattern into an assignment per member
+    bool assignConsStruct(AstNodeAssign* nodep) {
+        // Such an lvalue comes e.g. from an output port connection (IEEE 1800-2023 23.3.3)
+        AstConsStruct* const consp = VN_CAST(nodep->lhsp(), ConsStruct);
+        if (!consp) return false;
+        AstNodeAssign* newlistp = nullptr;
+        for (AstConsStructItem* itemp = consp->itemsp(); itemp;
+             itemp = VN_AS(itemp->nextp(), ConsStructItem)) {
+            // Original node is replaced, so it is safe to copy it one time even if it is impure.
+            AstNodeExpr* const fromp = nodep->rhsp()->cloneTree(false, newlistp != nullptr);
+            AstStructSel* const selp
+                = new AstStructSel{fromp->fileline(), fromp, itemp->memberp()->name()};
+            selp->dtypeFrom(itemp->memberp()->dtypep());
+            newlistp = AstNode::addNext(newlistp,
+                                        nodep->cloneType(itemp->valuep()->unlinkFrBack(), selp));
+        }
+        nodep->replaceWith(newlistp);
+        VL_DO_DANGLING(nodep->deleteTree(), nodep);
+        return true;
+    }
+
     void visit(AstNodeAssign* nodep) override {
         // Called recursively on newly created assignments
         if (nodep->user1SetOnce()) return;  // Process once
@@ -244,7 +275,7 @@ class SliceVisitor final : public VNVisitor {
         VL_RESTORER(m_okConsArray);  // Set in assignOptimize
         m_assignError = false;
         m_assignp = nodep;
-        if (assignOptimize(nodep)) return;
+        if (assignOptimize(nodep) || assignConsStruct(nodep)) return;
         iterateChildren(nodep);
     }
 

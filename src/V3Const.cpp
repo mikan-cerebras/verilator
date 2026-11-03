@@ -1037,6 +1037,11 @@ class ConstVisitor final : public VNVisitor {
                     AstNodeExpr* const valuep = consp->valuep(idx - range.lo());
                     UASSERT_OBJ(valuep, consp, "Constant array element missing");
                     selp = valuep->cloneTree(false);
+                } else if (const AstSliceSel* const slicep = VN_CAST(fromp, SliceSel)) {
+                    // Select from the sliced array, as a slice is a copy that cannot be written
+                    const int offset = slicep->declRange().lo() + idx - range.lo();
+                    selp = new AstArraySel{fromp->fileline(),
+                                           slicep->fromp()->cloneTreePure(false), offset};
                 } else {
                     selp = new AstArraySel{fromp->fileline(), fromp->cloneTreePure(false),
                                            idx - range.lo()};
