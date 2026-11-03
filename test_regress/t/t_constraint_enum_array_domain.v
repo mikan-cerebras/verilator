@@ -133,6 +133,18 @@ module t;
       `check(o.m.darr[0] != B);
       `check(isE(o.hs[0].sub.d));
       `check(o.hs[0].sub.d != C);
+
+      // Inline 'with': its own registrations
+      ok = a.randomize() with {fixed[1] != B; dyn[2] != C;};
+      `checkd(ok, 1);
+      foreach (a.fixed[i]) `check(isE(a.fixed[i]));
+      `check(a.fixed[1] != B);
+      foreach (a.dyn[i]) `check(isE(a.dyn[i]));
+      `check(a.dyn[2] != C);
+      ok = o.randomize() with {objs[1].d != C;};
+      `checkd(ok, 1);
+      foreach (o.objs[i]) `check(isE(o.objs[i].d));
+      `check(o.objs[1].d != C);
     end
     testStdRandomize();
     $write("*-* All Finished *-*\n");
