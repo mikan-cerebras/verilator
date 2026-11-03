@@ -1805,4 +1805,16 @@ package Pkg;
         BAR = 32'h1,
         BAZ = 32'h2
     } enum_t;
+    task disable_named;
+        begin : named
+            fork
+            begin
+                __VprocessQueue_named__0.push_back(
+                                                   self());
+                #1;
+            end
+            join
+        end
+        killQueue(__VprocessQueue_named__0);
+    endtask
 endpackage
