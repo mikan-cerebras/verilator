@@ -3056,12 +3056,10 @@ class AssertNfaVisitor final : public VNVisitor {
         if (outerSpecp->sensesp() && propSpecp->sensesp()) {
             outerSpecp->v3warn(E_UNSUPPORTED,
                                "Unsupported: Clock event before property call and in its body");
-            pushDeletep(propSpecp->sensesp()->unlinkFrBack());
+            pushDeletep(propSpecp->sensesp()->unlinkFrBackWithNext());
         }
         if (outerSpecp->sensesp()) {
-            AstSenItem* const sensesp = outerSpecp->sensesp();
-            sensesp->unlinkFrBack();
-            propSpecp->sensesp(sensesp);
+            propSpecp->addSensesp(outerSpecp->sensesp()->unlinkFrBackWithNext());
         }
 
         outerSpecp->replaceWith(propSpecp);
@@ -3296,10 +3294,28 @@ class AssertNfaVisitor final : public VNVisitor {
         VL_DO_DANGLING(pushDeletep(innerPropp), innerPropp);
     }
 
+    // True if two clocking events have the same event expressions
+    static bool sameClock(const AstSenItem* ap, const AstSenItem* bp) {
+        for (; ap && bp; ap = VN_CAST(ap->nextp(), SenItem), bp = VN_CAST(bp->nextp(), SenItem)) {
+            if (!ap->sameTree(bp)) return false;
+        }
+        return !ap && !bp;
+    }
+    // Replace a clocked sequence with its sequence
+    void unwrapClockedSeq(AstSClocked* clockedp) {
+        clockedp->replaceWith(clockedp->exprp()->unlinkFrBack());
+        VL_DO_DANGLING(pushDeletep(clockedp), clockedp);
+    }
     // Hoist a leading clocking event (IEEE 1800-2023 16.7):
     bool hoistClockedSeq(AstPropSpec* specp) {
         while (AstSClocked* const clockedp = VN_CAST(specp->propp(), SClocked)) {
             if (specp->sensesp()) {
+                // The same clock as the property's does not make it multiclocked
+                // (IEEE 1800-2023 16.13.2)
+                if (sameClock(specp->sensesp(), clockedp->sensesp())) {
+                    unwrapClockedSeq(clockedp);
+                    continue;
+                }
                 clockedp->v3warn(E_UNSUPPORTED, "Unsupported: multiclocked sequence or property");
                 replaceBodyOnBuildError(specp->fileline(), specp, true);
                 return true;
@@ -3314,22 +3330,26 @@ class AssertNfaVisitor final : public VNVisitor {
                     return true;
                 }
             }
-            specp->sensesp(clockedp->sensesp()->unlinkFrBackWithNext());
-            AstNodeExpr* const bodyp = clockedp->exprp()->unlinkFrBack();
-            clockedp->replaceWith(bodyp);
-            VL_DO_DANGLING(pushDeletep(clockedp), clockedp);
+            specp->addSensesp(clockedp->sensesp()->unlinkFrBackWithNext());
+            unwrapClockedSeq(clockedp);
         }
-        // A clocking event anywhere else in the sequence is not supported.
-        const AstSClocked* nestedp = nullptr;
-        specp->propp()->foreach([&](const AstSClocked* p) {
-            if (!nestedp) nestedp = p;
-        });
-        if (nestedp) {
-            nestedp->v3warn(E_UNSUPPORTED,
-                            "Unsupported: clocking event inside sequence expression");
-            replaceBodyOnBuildError(specp->fileline(), specp, true);
-            return true;
+        // A clocking event elsewhere in the sequence is supported if it is the property's clock,
+        // or else the default clocking's (IEEE 1800-2023 16.13.2)
+        const AstSenItem* const clockp = specp->sensesp() ? specp->sensesp()
+                                         : m_defaultClockingp
+                                             ? m_defaultClockingp->sentreep()->sensesp()
+                                             : nullptr;
+        std::vector<AstSClocked*> nestedps;
+        specp->propp()->foreach([&](AstSClocked* p) { nestedps.push_back(p); });
+        for (AstSClocked* const nestedp : nestedps) {
+            if (!sameClock(clockp, nestedp->sensesp())) {
+                nestedp->v3warn(E_UNSUPPORTED,
+                                "Unsupported: clocking event inside sequence expression");
+                replaceBodyOnBuildError(specp->fileline(), specp, true);
+                return true;
+            }
         }
+        for (AstSClocked* const nestedp : nestedps) unwrapClockedSeq(nestedp);
         return false;
     }
 
@@ -3725,7 +3745,7 @@ class AssertNfaVisitor final : public VNVisitor {
         // Inherit module defaults (IEEE 14.12, 16.15) when assertion has none. A clock inferred
         // from the always procedure takes precedence over default clocking (IEEE 1800-2023 16.16).
         if (!propp->sensesp() && m_defaultClockingp && !m_alwaysClockp) {
-            propp->sensesp(m_defaultClockingp->sentreep()->sensesp()->cloneTree(true));
+            propp->addSensesp(m_defaultClockingp->sentreep()->sensesp()->cloneTree(true));
         }
         if (!propp->disablep() && m_defaultDisablep && !isSeqEvent) {
             propp->disablep(m_defaultDisablep->condp()->cloneTreePure(true));
