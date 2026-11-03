@@ -110,7 +110,10 @@ const VBasicDTypeKwd LOGIC_IMPLICIT = VBasicDTypeKwd::LOGIC_IMPLICIT;
         GRAMMARP->m_varDeclTyped = true; \
     }
 #define VARDTYPE_NDECL(dtypep) \
-    { GRAMMARP->setDType(dtypep); }  // Port that is range or signed only (not a decl)
+    { \
+        GRAMMARP->setDType(dtypep); \
+        GRAMMARP->m_varDeclTyped = false; \
+    }  // Port that is range or signed only (not a decl)
 // An output port inheriting its direction, but with its own data type, does not inherit the port
 // kind, so is a variable (IEEE 1800-2023 23.2.2.3)
 #define PORTKINDDEFAULT() \
