@@ -2064,7 +2064,7 @@ const char* VlRandomizer::solverLogic() const {
     for (const auto& var : m_vars) {
         if (var.second->dimension() > 0) return "QF_ABV";
     }
-    // A random index into a non-random array makes an array literal in the constraint
+    // A constraint may hold an array term of its own, such as an array literal
     for (const auto* const constraintsp : {&m_constraints, &m_softConstraints}) {
         for (const std::string& constraint : *constraintsp) {
             if (constraint.find("(Array ") != std::string::npos) return "QF_ABV";
