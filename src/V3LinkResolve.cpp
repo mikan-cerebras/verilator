@@ -191,7 +191,8 @@ class LinkResolveVisitor final : public VNVisitor {
             // UINFOTREE(9, nodep, "", "let-ref");
             // cppcheck-suppress constVariablePointer
             AstStmtExpr* const letStmtp = VN_AS(letp->stmtsp(), StmtExpr);
-            AstNodeExpr* const newp = letStmtp->exprp()->cloneTree(false);
+            // Clone with the statement, so a body that is only a formal can be replaced
+            AstStmtExpr* const newStmtp = letStmtp->cloneTree(false);
             const V3TaskConnects tconnects = V3Task::taskConnects(nodep, letp->stmtsp());
             std::map<const AstVar*, AstNodeExpr*> portToExprs;
             for (const auto& tconnect : tconnects) {
@@ -202,16 +203,26 @@ class LinkResolveVisitor final : public VNVisitor {
                 portToExprs.emplace(portp, pinp);
             }
             // Replace VarRefs of arguments with the argument values
-            newp->foreach([&](AstVarRef* refp) {  //
+            newStmtp->foreach([&](AstVarRef* refp) {  //
                 const auto it = portToExprs.find(refp->varp());
                 if (it != portToExprs.end()) {
                     AstNodeExpr* const pinp = it->second;
                     UINFO(9, "let pin subst " << refp << " <- " << pinp);
                     // Side effects are copied into pins, to match other simulators
-                    refp->replaceWith(pinp->cloneTree(false));
+                    AstNodeExpr* substp = pinp->cloneTree(false);
+                    // The actual of a typed formal is cast to its type (IEEE 1800-2023 11.12)
+                    AstNodeDType* const portDTypep = it->first->childDTypep();
+                    const AstBasicDType* const basicp = VN_CAST(portDTypep, BasicDType);
+                    if (!basicp || !basicp->untyped()) {
+                        substp = new AstCast{substp->fileline(), substp, VFlagChildDType{},
+                                             portDTypep->cloneTree(false)};
+                    }
+                    refp->replaceWith(substp);
                     VL_DO_DANGLING(pushDeletep(refp), refp);
                 }
             });
+            AstNodeExpr* const newp = newStmtp->exprp()->unlinkFrBack();
+            VL_DO_DANGLING(newStmtp->deleteTree(), newStmtp);
             // UINFOTREE(9, newp, "", "let-new");
             nodep->replaceWith(newp);
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
