@@ -4049,12 +4049,18 @@ class LinkDotResolveVisitor final : public VNVisitor {
         m_ds.init(m_curSymp);
         iterateNull(nodep);
     }
-    static const AstNodeDType* getExprDTypep(const AstNodeExpr* selp) {
+    // Return the data type of a randomize() target, nullptr if unsupported or deferred
+    const AstNodeDType* getExprDTypep(const AstNodeExpr* selp) {
         while (const AstNodePreSel* const sp = VN_CAST(selp, NodePreSel)) selp = sp->fromp();
         if (const AstMemberSel* const sp = VN_CAST(selp, MemberSel)) {
             if (const AstNodeDType* dtypep = getExprDTypep(sp->fromp())) {
                 if (const AstClassRefDType* const classRefp = VN_CAST(dtypep, ClassRefDType)) {
                     const AstClass* const classp = classRefp->classp();
+                    if (m_statep->forPrimary() && hasUnresolvedBase(classp)) {
+                        // Inherited members are unknown until V3Param specializes the base
+                        m_ds.m_unresolvedClass = true;
+                        return nullptr;
+                    }
                     const bool found = classp->existsMember(
                         [&dtypep, name = selp->name()](const AstClass*, const AstVar* nodep) {
                             dtypep = nodep->childDTypep();
@@ -4074,18 +4080,16 @@ class LinkDotResolveVisitor final : public VNVisitor {
         }
         return nullptr;
     }
-    static const AstVar* getNextVarp(const AstNode* stmtsp) {
-        // Only IO ports, as parameters are on paramsp(), not the pinsp() list paired here
-        while (stmtsp) {
-            if (const AstVar* const varp = VN_CAST(stmtsp, Var)) {
-                if (varp->isIO()) return varp;
-            }
-            stmtsp = stmtsp->nextp();
+    // Whether a base class of 'classp' is not yet specialized
+    static bool hasUnresolvedBase(const AstClass* classp) {
+        while (const AstClassExtends* const cextp = classp->extendsp()) {
+            classp = cextp->classOrNullp();
+            if (!classp) return true;
         }
-        return nullptr;
+        return false;
     }
     // Introduce implicit parameters for modules with generic interafeces
-    void addImplicitParametersOfGenericIface(AstCell* const nodep, const AstModule* const modp) {
+    void addImplicitParametersOfGenericIface(AstCell* const nodep) {
         // Get Param number
         int paramNum = 1;
         for (AstPin* paramp = nodep->paramsp(); paramp; paramp = VN_CAST(paramp->nextp(), Pin)) {
@@ -4093,11 +4097,9 @@ class LinkDotResolveVisitor final : public VNVisitor {
         }
 
         // Add each implicit parameter type
-        const AstVar* modIfaceVarp = getNextVarp(modp->stmtsp());
-        for (const AstPin* pinp = nodep->pinsp(); pinp && modIfaceVarp;
-             pinp = VN_CAST(pinp->nextp(), Pin),
-                           modIfaceVarp = getNextVarp(modIfaceVarp->nextp())) {
-            if (modIfaceVarp->varType() != VVarType::IFACEREF
+        for (const AstPin* pinp = nodep->pinsp(); pinp; pinp = VN_CAST(pinp->nextp(), Pin)) {
+            const AstVar* const modIfaceVarp = pinp->modVarp();
+            if (!modIfaceVarp || modIfaceVarp->varType() != VVarType::IFACEREF
                 || !VN_IS(modIfaceVarp->childDTypep()->elemDTypep(), IfaceGenericDType)) {
                 continue;
             }
@@ -4158,9 +4160,6 @@ class LinkDotResolveVisitor final : public VNVisitor {
                     if (refp->cellp()->paramsp()) {
                         newIfaceRefp->addParamsp(refp->cellp()->paramsp()->cloneTree(true));
                     }
-                    UASSERT_OBJ(pinp->name().find("__pinNumber") == 0
-                                    || pinp->name() == modIfaceVarp->name(),
-                                pinp, "Not found interface with such name");
                     AstPin* const newPinp
                         = new AstPin{pinp->fileline(), paramNum,
                                      "__VGIfaceParam" + modIfaceVarp->name(), newIfaceRefp};
@@ -4280,8 +4279,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
 
                 if (m_statep->forPrimary())
                     if (const AstModule* const modp = VN_CAST(nodep->modp(), Module)) {
-                        if (modp->hasGenericIface())
-                            addImplicitParametersOfGenericIface(nodep, modp);
+                        if (modp->hasGenericIface()) addImplicitParametersOfGenericIface(nodep);
                     }
             }
         }
@@ -5714,7 +5712,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
                     } else {
                         fromDtp = getExprDTypep(nodep->fromp());
                     }
-                    if (!fromDtp) {
+                    if (!fromDtp && !m_ds.m_unresolvedClass) {
                         if (nodep->withp()) {
                             nodep->v3warn(
                                 E_UNSUPPORTED,
