@@ -273,6 +273,8 @@ class VlRandomizer VL_NOT_FINAL {
     ArrayInfoMap m_arr_vars;  // Tracks each element in array structures for iteration
     // Arrays whose elements must be distinct grouped by unique constraint
     std::map<uint32_t, std::unordered_set<std::string>> m_uniqueArrays;
+    // Variable name and constraint of each pin_frozen()
+    std::vector<std::pair<std::string, std::string>> m_frozenPins;
     const VlQueue<CData>* m_randmodep = nullptr;  // rand_mode state;
     const VlQueue<CData>* m_static_randmodep = nullptr;  // Static rand_mode state (shared)
     std::unordered_set<std::string> m_staticVars;  // Names of static rand vars
@@ -979,8 +981,16 @@ public:
         hard(std::move(constraint), {name});
     }
     void disable_soft(const std::string& varName);
+    // Add a hard constraint that applies only while variable varName is registered
+    void pin_frozen(const std::string& varName, std::string&& constraint) {
+        m_frozenPins.emplace_back(varName, std::move(constraint));
+    }
     void clearConstraints();
     void clearAll();  // Clear both constraints and variables
+    // Unregister the fields of the objects in a class handle array
+    void clear_elem_vars(const std::string& arrayName);
+    // Unregister a variable
+    void clear_var(const std::string& name) { m_vars.erase(name); }
     void markRandc(const std::string& name);  // Mark variable as randc for cyclic tracking
     /// Restrict variable name to its enum values: domain is a Bool term over '__Ve'
     void enum_domain(const std::string& name, const char* domain) { m_enumDomains[name] = domain; }
