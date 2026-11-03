@@ -79,18 +79,21 @@ for mode, at, npass in runs:
 # soft relaxation and the base check-sat of call 1. To re-derive a TAMPER_AT, log the
 # untampered +MODE=pins conversation and count the replies its mode counts.
 pin_runs = [
-    # Untampered: calls 1 to 4 settle after 4, 7, 5 and 4 rounds
-    (None, 0, 20),
-    # Status 4: the first pin round of call 1, answered unknown
-    ('unknown_once', 4, 17),
+    # Untampered: calls 1 to 4 each settle after 4 rounds: the pin of the variable conflicts,
+    # and so does its check of whether it can change at all
+    (None, 0, 16),
+    # Status 4: the first pin round of call 1, answered unknown, so call 1 checks only the
+    # base solution again
+    ('unknown_once', 4, 14),
     # Unsat-assumptions reply 1: the first pin round of call 1, an error leaving no core
-    ('err_assume', 1, 17),
+    ('err_assume', 1, 14),
     # Unsat-assumptions reply 1: the first pin round of call 1, naming only literals out of
     # range
-    ('oor_assume', 1, 17),
-    # Unsat-assumptions reply 1 on: every pin round names the already dropped a0, so each
-    # call runs out its 8 rounds, one per pin plus one
-    ('stale_assume', 1, 32),
+    ('oor_assume', 1, 14),
+    # Unsat-assumptions reply 1 on: every core names a0, which each call drops first anyway;
+    # in the round checking whether it can change, a0 is no longer one of the literals, which
+    # ends the rounds as untampered
+    ('stale_assume', 1, 16),
 ]
 
 for mode, at, nrounds in pin_runs:
