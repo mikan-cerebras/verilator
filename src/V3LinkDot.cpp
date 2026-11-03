@@ -3794,12 +3794,11 @@ class LinkDotResolveVisitor final : public VNVisitor {
                         = foundp
                           && (!foundp->imported()
                               || inheritedImplements(foundp, it->second, needForward));
-                    if (needForward && m_statep->forPrimary()
-                        && !derivedClassp->isInterfaceClass()) {
+                    if (needForward && !derivedClassp->isInterfaceClass()) {
                         m_ifForwards.emplace(baseSubp->name(), foundp);
                     }
-                    if (m_statep->forPrimary() && !existsInDerived
-                        && !derivedClassp->isInterfaceClass() && !derivedClassp->isVirtual()) {
+                    if (!existsInDerived && !derivedClassp->isInterfaceClass()
+                        && !derivedClassp->isVirtual()) {
                         derivedClassp->v3error(
                             "Class " << derivedClassp->prettyNameQ() << impOrExtends
                                      << baseClassp->prettyNameQ()
@@ -3811,8 +3810,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
                                      << baseSubp->warnContextSecondary());
                     }
                     const auto itn = m_ifClassImpNames.find(baseSubp->name());
-                    if (m_statep->forPrimary() && !existsInDerived
-                        && itn != m_ifClassImpNames.end()
+                    if (!existsInDerived && itn != m_ifClassImpNames.end()
                         && itn->second != baseSubp) {  // Not exact same function from diamond
                         derivedClassp->v3error(
                             "Class " << derivedClassp->prettyNameQ() << impOrExtends
@@ -3831,8 +3829,8 @@ class LinkDotResolveVisitor final : public VNVisitor {
                     const AstConstraint* const baseFuncp = VN_CAST(baseSubp, Constraint);
                     if (!baseFuncp || !baseFuncp->isKwdPure()) continue;
                     const bool existsInDerived = foundp && !foundp->imported();
-                    if (m_statep->forPrimary() && !existsInDerived
-                        && !derivedClassp->isInterfaceClass() && !derivedClassp->isVirtual()) {
+                    if (!existsInDerived && !derivedClassp->isInterfaceClass()
+                        && !derivedClassp->isVirtual()) {
                         derivedClassp->v3error(
                             "Class " << derivedClassp->prettyNameQ() << impOrExtends
                                      << baseClassp->prettyNameQ()
@@ -3850,8 +3848,14 @@ class LinkDotResolveVisitor final : public VNVisitor {
     void importSymbolsFromExtended(AstClass* const nodep, AstClassExtends* const cextp) {
         AstClass* const baseClassp = cextp->classp();
         VSymEnt* const srcp = m_statep->getNodeSym(baseClassp);
-        importDerivedClass(nodep, srcp, baseClassp);
         if (!cextp->isImplements()) m_curSymp->importFromClass(srcp);
+    }
+    // Whether 'classp' has a parameterized base class, so its bases are resolved by V3Param
+    static bool extendsParameterized(const AstClass* classp) {
+        for (const AstClassExtends* const cextp : classp->extendspList()) {
+            if (cextp->parameterized() || extendsParameterized(cextp->classp())) return true;
+        }
+        return false;
     }
     void classExtendImport(AstClass* nodep) {
         // A class reference might be to a class that is later in Ast due to
@@ -6262,6 +6266,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
         VL_RESTORER_COPY(m_ifForwards);
         VL_RESTORER(m_insideClassExtParam);
         {
+            m_ifClassImpNames.clear();
             m_ifForwards.clear();
             m_ds.init(m_curSymp);
             m_insideClassExtParam = nodep->isCovergroup() && nodep->covergroupEnclosingClassp()
@@ -6332,6 +6337,16 @@ class LinkDotResolveVisitor final : public VNVisitor {
                 }
             }
             m_ds.m_dotSymp = m_curSymp;
+            // Check implementations of inherited pure methods once all inherited members are
+            // known, which is after V3Param if a base class is parameterized
+            if (m_statep->forPrimary() ? !m_insideClassExtParam
+                                       : m_statep->forParamed() && extendsParameterized(nodep)) {
+                for (AstClassExtends* const cextp : nodep->extendspList()) {
+                    AstClass* const baseClassp = cextp->classOrNullp();
+                    if (!baseClassp) continue;  // Unresolved after an error
+                    importDerivedClass(nodep, m_statep->getNodeSym(baseClassp), baseClassp);
+                }
+            }
 
             iterateChildren(nodep);
             for (const auto& itr : m_ifForwards) {
