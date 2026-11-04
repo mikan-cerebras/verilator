@@ -1329,11 +1329,21 @@ class RandomizeMarkVisitor final : public VNVisitor {
     static bool dependsOnRandValue(AstNode* opp) {
         // A class handle is not a solver variable, only its rand members are (see
         // visit(AstMemberSel)), so e.g. a 'handle != null' guard is evaluated as state. But a
-        // handle selected by a random index from a non-random array depends on the index.
+        // handle selected by a random index, from a random array or not, depends on the index.
         if (!opp || !opp->user1()) return false;
-        return !opp->isClassHandleValue()
-               || randIndexSelp(VN_AS(opp, NodeExpr),
-                                [](const AstNodeExpr* indexp) { return indexp->user1() != 0; });
+        if (!opp->isClassHandleValue()) return true;
+        for (AstNode* curp = opp; curp; curp = curp->op1p()) {
+            if (const AstNodeSel* const selp = VN_CAST(curp, NodeSel)) {
+                if (selp->bitp()->user1()) return true;
+            } else if (const AstCMethodHard* const methodp = VN_CAST(curp, CMethodHard)) {
+                if (methodp->method() == VCMethod::ARRAY_AT && methodp->pinsp()->user1()) {
+                    return true;
+                }
+            } else if (!VN_IS(curp, MemberSel) && !VN_IS(curp, StructSel)) {
+                return false;
+            }
+        }
+        return false;
     }
     void visit(AstNodeExpr* nodep) override {
         iterateChildrenConst(nodep);
