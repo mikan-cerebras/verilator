@@ -52,4 +52,11 @@
            i = ?32?h3
    61 |   localparam BOOB = f_bad_out_of_bounds(3);
       |                     ^~~~~~~~~~~~~~~~~~~
+%Error: t/t_func_const_bad.v:68:22: Expecting expression to be constant, but can't determine constant for FUNCREF 'f_bad_out_of_bounds_wide'
+                                  : ... note: In instance 't'
+        t/t_func_const_bad.v:72:13: ... Location of non-constant ARRAYSEL: Array select out of range: 4294967297
+        t/t_func_const_bad.v:68:22: ... Called from 'f_bad_out_of_bounds_wide()' with parameters:
+           i = 64'h100000001
+   68 |   localparam BOOBW = f_bad_out_of_bounds_wide(64'h1_0000_0001);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~
 %Error: Exiting due to
