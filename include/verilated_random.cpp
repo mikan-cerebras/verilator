@@ -1017,6 +1017,7 @@ bool VlRandomizer::nextRandomize(VlRNGReseeds& rngr, bool checkOnly) {
     for (const FuncArgRound& argRound : m_funcArgRounds) {
         if (argRound.round < m_funcRound && !argRound.pin.empty()) {
             m_constraints.push_back(argRound.pin);
+            m_constraintVarEnds.push_back(m_constraintVarNames.size());  // Names no randc
         }
     }
 
