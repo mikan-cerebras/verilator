@@ -3295,9 +3295,7 @@ defparamIdRangeExpr<nodeExprp>:  // IEEE: part of defparam_assignment
                 idAny
                         { $$ = new AstParseRef{$<fl>1, *$1, nullptr, nullptr}; }
         |       idAny part_select_rangeList
-                        { $$ = new AstParseRef{$<fl>1, *$1, nullptr, nullptr};
-                          BBUNSUP($2, "Unsupported: defparam with arrayed instance");
-                          DEL($2); }
+                        { $$ = GRAMMARP->scrubSel(new AstParseRef{$<fl>1, *$1, nullptr, nullptr}, $2); }
         ;
 
 defparamIdRange<strp>:  // IEEE: part of defparam_assignment
