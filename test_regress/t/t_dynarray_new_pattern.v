@@ -382,6 +382,27 @@ module t;
       `checkh(q.size, 1);
       `checkh(q[0], 'h5);
     end
+    begin  // Signed keys splice in signed index order
+      int q[$];
+      int aa[int];
+      aa[7] = 7;
+      aa[-7] = 1;
+      aa[0] = 2;
+      q = {aa, 4};
+      `checkh(q.size, 4);
+      `checkh(q[0], 'h1);
+      `checkh(q[1], 'h2);
+      `checkh(q[2], 'h7);
+      begin  // With its elements converted
+        bit [1:0] q2[$];
+        // verilator lint_off WIDTHTRUNC
+        q2 = {aa};
+        // verilator lint_on WIDTHTRUNC
+        `checkh(q2.size, 3);
+        `checkh(q2[0], 2'h1);
+        `checkh(q2[2], 2'h3);
+      end
+    end
     begin  // An associative array of strings into a dynamic array
       bit [6:0] d[];
       bit [6:0] sa[string];

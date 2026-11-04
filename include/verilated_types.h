@@ -39,7 +39,7 @@
 #include <string>
 #include <utility>
 
-template <typename T_Key, typename T_Value>
+template <typename T_Key, typename T_Value, typename T_KeyLess = std::less<T_Key>>
 class VlAssocArray;
 class VlClass;
 template <typename T_Class>
@@ -752,8 +752,8 @@ private:
         for (std::size_t i = 0; i < N_Depth; ++i) m_deque.push_back(rhs[i]);
     }
     // An associative array gives its values in foreach order (IEEE 1800-2023 10.10, 7.8)
-    template <typename T_Key>
-    void append(const VlAssocArray<T_Key, T_Value>& rhs) {
+    template <typename T_Key, typename T_KeyLess>
+    void append(const VlAssocArray<T_Key, T_Value, T_KeyLess>& rhs) {
         for (const auto& item : rhs) m_deque.push_back(item.second);
     }
     template <typename T_Subclass, size_t N_RhsMaxSize,
@@ -768,10 +768,10 @@ private:
     void append(const VlUnpacked<VlClassRef<T_Subclass>, N_Depth>& rhs) {
         for (std::size_t i = 0; i < N_Depth; ++i) m_deque.push_back(rhs[i]);
     }
-    template <typename T_Key, typename T_Subclass,
+    template <typename T_Key, typename T_Subclass, typename T_KeyLess,
               typename = typename std::enable_if<
                   std::is_convertible<VlClassRef<T_Subclass>, T_Value>::value>::type>
-    void append(const VlAssocArray<T_Key, VlClassRef<T_Subclass>>& rhs) {
+    void append(const VlAssocArray<T_Key, VlClassRef<T_Subclass>, T_KeyLess>& rhs) {
         for (const auto& item : rhs) m_deque.push_back(item.second);
     }
     // An element given as another kind of array, e.g. a fixed-size array in a queue of queues
@@ -1276,7 +1276,7 @@ struct VlSignedKeyLess final {
     }
 };
 
-template <typename T_Key, typename T_Value, typename T_KeyLess = std::less<T_Key>>
+template <typename T_Key, typename T_Value, typename T_KeyLess>
 class VlAssocArray final {
 private:
     // TYPES
