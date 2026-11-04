@@ -1030,6 +1030,7 @@ class ConstVisitor final : public VNVisitor {
         if (const AstUnpackArrayDType* const unpackDtypep = VN_CAST(dtypep, UnpackArrayDType)) {
             const VNumRange range = unpackDtypep->declRange();
             const AstConsArray* const consp = VN_CAST(fromp, ConsArray);
+            const AstSliceSel* const slicep = VN_CAST(fromp, SliceSel);
             for (const int idx : range.seqLeftToRight()) {
                 // Select by offset from the low index, from a constant array directly
                 AstNodeExpr* selp;
@@ -1037,8 +1038,10 @@ class ConstVisitor final : public VNVisitor {
                     AstNodeExpr* const valuep = consp->valuep(idx - range.lo());
                     UASSERT_OBJ(valuep, consp, "Constant array element missing");
                     selp = valuep->cloneTree(false);
-                } else if (const AstSliceSel* const slicep = VN_CAST(fromp, SliceSel)) {
-                    // Select from the sliced array, as a slice is a copy that cannot be written
+                } else if (slicep && VN_IS(slicep->lsbp(), Const)) {
+                    // Select from the sliced array, as a slice is a copy that cannot be written.
+                    // A variable slice is selected from in V3Slice, after V3Unknown checks that
+                    // the whole slice is within the array.
                     const int offset = slicep->declRange().lo() + idx - range.lo();
                     selp = new AstArraySel{fromp->fileline(),
                                            slicep->fromp()->cloneTreePure(false), offset};
