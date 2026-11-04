@@ -2067,7 +2067,8 @@ class ParamProcessor final {
         return pinp;
     }
 
-    void resolveDefaultParams(AstNode* nodep) {
+    // Give a class reference a pin for each default type; return true if it gives no value
+    bool resolveDefaultParams(AstNode* nodep) {
         AstClassOrPackageRef* classOrPackageRefp = VN_CAST(nodep, ClassOrPackageRef);
         AstClassRefDType* classRefDTypep = VN_CAST(nodep, ClassRefDType);
         AstClass* classp = nullptr;
@@ -2075,7 +2076,7 @@ class ParamProcessor final {
 
         if (classOrPackageRefp) {
             classp = VN_CAST(classOrPackageRefp->classOrPackageSkipp(), Class);
-            if (!classp) return;  // No parameters in packages
+            if (!classp) return false;  // No parameters in packages
             paramsp = classOrPackageRefp->paramsp();
         } else if (classRefDTypep) {
             classp = classRefDTypep->classp();
@@ -2099,12 +2100,14 @@ class ParamProcessor final {
                 paramPins.emplace(stmtp, nullptr);
             }
         }
+        bool givesNoValue = true;
         for (AstPin *pinp = paramsp, *nextp; pinp; pinp = nextp) {
             nextp = VN_AS(pinp->nextp(), Pin);
             if (!pinp->exprp()) {  // An empty override keeps the default, given below
                 VL_DO_DANGLING(m_deleter.pushDeletep(pinp->unlinkFrBack()), pinp);
                 continue;
             }
+            givesNoValue = false;
             const AstNode* const paramp
                 = pinp->modPTypep() ? static_cast<AstNode*>(pinp->modPTypep()) : pinp->modVarp();
             const auto it = paramPins.find(paramp);
@@ -2146,6 +2149,7 @@ class ParamProcessor final {
                 classRefDTypep->addParamsp(pinp);
             }
         }
+        return givesNoValue;
     }
 
     // True if modp is the mailbox class of the std package
@@ -2381,10 +2385,13 @@ class ParamProcessor final {
         return newModp;
     }
     AstNodeModule* classRefDeparam(AstClassOrPackageRef* nodep, AstNodeModule* srcModp) {
-        resolveDefaultParams(nodep);
+        const bool givesNoValue = resolveDefaultParams(nodep);
         AstNodeModule* const newModp
             = nodeDeparamCommon(nodep, srcModp, nodep->paramsp(), nullptr, false);
         if (!newModp) return nullptr;
+        // A reference giving no value is to the default specialization, even if a default
+        // depending on another parameter made it look overridden in nodeDeparamCommon
+        if (givesNoValue && newModp != srcModp) srcModp->user4p(newModp);
         nodep->classOrPackagep(newModp);  // Might be unchanged if not cloned (newModp == srcModp)
 
         // If this ClassOrPackageRef is a child of a RefDType (e.g., typedef class#(T)::member_t),
@@ -2404,10 +2411,13 @@ class ParamProcessor final {
         return newModp;
     }
     AstNodeModule* classRefDeparam(AstClassRefDType* nodep, AstNodeModule* srcModp) {
-        resolveDefaultParams(nodep);
+        const bool givesNoValue = resolveDefaultParams(nodep);
         AstNodeModule* const newModp
             = nodeDeparamCommon(nodep, srcModp, nodep->paramsp(), nullptr, false);
         if (!newModp) return nullptr;
+        // A reference giving no value is to the default specialization, even if a default
+        // depending on another parameter made it look overridden in nodeDeparamCommon
+        if (givesNoValue && newModp != srcModp) srcModp->user4p(newModp);
         AstClass* const newClassp = VN_AS(newModp, Class);
         nodep->classp(newClassp);  // Might be unchanged if not cloned (newModp == srcModp)
         nodep->classOrPackagep(newClassp);
