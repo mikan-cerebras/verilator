@@ -1127,14 +1127,14 @@ void VlRandomizer::emitAsserts(std::ostream& os, const std::vector<std::string>&
     int j = 0;
     for (const std::string& constraint : m_constraints) {
         if (named) {
-            os << "(assert (! (= #b1 " << constraint << ") :named cons" << j++ << "))\n";
+            os << "(assert (! (= #b1 " << constraint << ") :named __Vcons" << j++ << "))\n";
         } else {
             os << "(assert (= #b1 " << constraint << "))\n";
         }
     }
     for (const std::string& extra : extras) {
         if (named) {
-            os << "(assert (! (= #b1 " << extra << ") :named cons" << j++ << "))\n";
+            os << "(assert (! (= #b1 " << extra << ") :named __Vcons" << j++ << "))\n";
         } else {
             os << "(assert (= #b1 " << extra << "))\n";
         }

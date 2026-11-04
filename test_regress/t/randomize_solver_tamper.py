@@ -97,7 +97,7 @@ RECHECK_MODES = ("unsat_recheck", )
 PHASE_MODES = ("err_phase", "phase_model", "phase_trunc")
 # Modes acting on an unsat-assumptions reply, which lists __Va<N> literals
 ASSUME_MODES = ("err_assume", "garbage_assume", "oor_assume", "stale_assume")
-# Modes acting on an unsat-core reply, which lists cons<N> names
+# Modes acting on an unsat-core reply, which lists __Vcons<N> names
 CORE_MODES = ("core_junk", "err_core")
 # Modes rewriting every line, so they never consume the index
 STREAM_MODES = ("crlf", "indent", "multiline", "success")
@@ -192,7 +192,7 @@ for line in proc.stdout:
     elif mode in ASSUME_MODES:
         counted = at_reply_start and re.match(r"\(__Va\d", line) is not None
     elif mode in CORE_MODES:
-        counted = at_reply_start and line.startswith("(cons")
+        counted = at_reply_start and line.startswith("(__Vcons")
     else:
         counted = at_reply_start and line.startswith("((")
     if line == "unsat":
@@ -237,7 +237,7 @@ for line in proc.stdout:
         swallow(line)
         continue
     if mode == "core_junk":
-        emit("junk((cons0))")
+        emit("junk((__Vcons0))")
         proc.kill()
         proc.wait()
         sys.exit(0)

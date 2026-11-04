@@ -20,5 +20,7 @@ test.execute()
 
 # A variable named like an assumption literal makes the solver reject the query
 test.file_grep_not(test.run_log_filename, r'Solver did not answer')
+# Also with a variable named like the names of constraints in the unsat core query
+test.file_grep(test.run_log_filename, r"Unsatisfied constraint: 'cons0 > 10;'")
 
 test.passes()
