@@ -78,6 +78,7 @@ class UnknownVisitor final : public VNVisitor {
         // Spec says a out-of-range LHS SEL results in a NOP.
         // We wrap the expression into IF
         AstNodeExpr* prep = nodep;
+        const VAccess access = VN_AS(nodep->baseFromp(true), NodeVarRef)->access();
 
         // Scan back to put the condlvalue above all selects (IE top of the lvalue)
         while (VN_IS(prep->backp(), NodeSel) || VN_IS(prep->backp(), Sel)
@@ -119,7 +120,7 @@ class UnknownVisitor final : public VNVisitor {
                                                 prep->dtypep()};
                 addVar(varp);
                 AstNode* const prepCopyp = prep->clonep();
-                prepCopyp->replaceWith(new AstVarRef{fl, varp, VAccess::WRITE});
+                prepCopyp->replaceWith(new AstVarRef{fl, varp, access});
                 VL_DO_DANGLING(pushDeletep(prepCopyp), prepCopyp);
             }
             AstIf* const newp = new AstIf{fl, condp, origStmtp, elseStmtp};
