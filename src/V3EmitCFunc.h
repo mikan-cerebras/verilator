@@ -498,13 +498,13 @@ public:
     }
 
     void visit(AstCvtUnpackToQueue* nodep) override {
-        // A queue is indexed from the left, which is the last element of a descending array
-        const bool reverse = !VN_AS(nodep->fromp()->dtypep()->skipRefp(), UnpackArrayDType)
-                                  ->declRange()
-                                  .ascending();
-        putns(nodep, reverse ? "VL_CVT_UNPACK_TO_Q<true>(" : "VL_CVT_UNPACK_TO_Q<false>(");
-        iterateAndNextConstNull(nodep->fromp());
-        puts(")");
+        const AstUnpackArrayDType* const arrayp
+            = VN_AS(nodep->fromp()->dtypep()->skipRefp(), UnpackArrayDType);
+        AstNodeDType* const elemDTypep = arrayp->subDTypep();
+        const string format = arrayp->declRange().ascending()
+                                  ? nodep->emitC()
+                                  : "VL_CVT_UNPACK_TO_Q_REVERSED(%P, %li)";
+        emitOpName(nodep, format, nodep->fromp(), elemDTypep, nullptr);
     }
     void visit(AstCvtQueueToUnpack* nodep) override {
         // Whether each unpacked dimension is reversed, the first for the outermost
