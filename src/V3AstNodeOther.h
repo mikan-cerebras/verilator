@@ -1381,7 +1381,7 @@ class AstDefParam final : public AstNode {
     // A defparam assignment
     // Parents: MODULE
     // @astgen op1 := rhsp : AstNodeExpr
-    // @astgen op2 := pathp : AstNodeExpr
+    // @astgen op2 := pathp : Optional[AstNodeExpr]  // nullptr if in the defparam's own scope
     string m_name;  // Name of variable getting set
 public:
     AstDefParam(FileLine* fl, AstNodeExpr* pathp, const string& name, AstNodeExpr* rhsp)
