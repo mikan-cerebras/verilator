@@ -366,7 +366,7 @@ class VlRandomizer VL_NOT_FINAL {
     bool assumeDropping(VlSolverSession& sess, const std::string& keep, int first,
                         const std::vector<PinTerm>& terms, std::vector<bool>& droppedr,
                         int& checksLeftr, std::vector<bool>* guessedp = nullptr,
-                        std::vector<bool>* wholeSlotp = nullptr);
+                        std::vector<int>* slotIdsp = nullptr, int* satisfiedLeftp = nullptr);
     // Values of a (get-value) reply, in order
     bool readValues(VlSolverSession& sess, std::vector<std::string>& valuesr);
     // Layers of solve...before variables in dependency order

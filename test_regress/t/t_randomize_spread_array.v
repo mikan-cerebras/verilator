@@ -21,6 +21,7 @@ class Item;
   rand int unsigned dly[];
   rand int unsigned dmax;
   rand bit [7:0] pkt[];
+  rand bit en[];
   constraint c_size {
     n == 100;
     addr.size() == n;
@@ -29,6 +30,7 @@ class Item;
     sel.size() == n;
     dly.size() == n;
     pkt.size() == n;
+    en.size() == n;
   }
   constraint c_dom {
     // A few elements constrained on their own, and all distinct
@@ -44,6 +46,8 @@ class Item;
     foreach (dly[i]) soft dly[i] inside {[1 : dmax]};
     // A header of more fixed elements than are let conflict alone
     foreach (pkt[i]) if (i < 6) pkt[i] == 8'(i);
+    // Single bits, more of them fixed than are let conflict alone
+    foreach (en[i]) if (i < 16) en[i] == 1'b0;
   }
 endclass
 
@@ -77,6 +81,7 @@ module t;
   initial begin
     automatic Item it = new;
     automatic Wide wide = new;
+    automatic int randomize_result;
     begin
       automatic int chips[] = new[8];
       automatic int pcies[] = new[8];
@@ -84,7 +89,9 @@ module t;
       automatic int dlys[] = new[3];
       automatic int addrBits[] = new[12];
       automatic int pktBits[] = new[8];
-      `checkd(it.randomize(), 1);
+      automatic int ens = 0;
+      randomize_result = it.randomize();
+      `checkd(randomize_result, 1);
       foreach (it.chip[i]) begin
         ++chips[it.chip[i]];
         ++pcies[it.pcie[i]];
@@ -104,13 +111,23 @@ module t;
         else begin
           foreach (pktBits[b]) pktBits[b] += it.pkt[i][b];
         end
+        if (i < 16) begin
+          `checkd(it.en[i], 1'b0);
+        end
+        else begin
+          ens += it.en[i];
+        end
       end
       // Half of the 100 elements, or for two values, three quarters
       check_spread(chips, 0, 3, 50);
       check_spread(pcies, 0, 7, 50);
       check_spread(sels, 0, 7, 50);
       check_spread(dlys, 1, 2, 75);
-      // Each free bit is set in about half of the 97 or 94 elements
+      // Each free bit is set in about half of the 97, 94 or 84 elements
+      if (ens < 21 || ens > 63) begin
+        $write("%%Error: en set in %0d elements\n", ens);
+        `stop;
+      end
       foreach (addrBits[b]) begin
         if (addrBits[b] < 24 || addrBits[b] > 73) begin
           $write("%%Error: address bit %0d set in %0d elements\n", b, addrBits[b]);
@@ -124,7 +141,8 @@ module t;
         end
       end
     end
-    `checkd(wide.randomize(), 1);
+    randomize_result = wide.randomize();
+    `checkd(randomize_result, 1);
     foreach (wide.w0[i]) begin
       `checkd(wide.w0[i][7:0], 8'(i));
       `checkd(wide.w23[i][135:128], 8'(i));
