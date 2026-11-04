@@ -13124,9 +13124,8 @@ public:
                     streamp->dtypeFrom(streamp->lhsp());
                 }
                 if (packedToDynamic) {
-                    // Zero-fill to a whole number of elements as for a queue target before:
-                    // a '>>' stream on the left, as a queue source is read back, a '<<' stream
-                    // on the right. IEEE 1800-2023 11.4.14 zero-fills both on the right.
+                    // Zero-fill on the right to a whole number of elements (IEEE 1800-2023
+                    // 11.4.14)
                     const int elemWidth = lhsDTypeSkippedRefp->subDTypep()->width();
                     const int padWidth = (elemWidth - srcp->width() % elemWidth) % elemWidth;
                     if (padWidth) {
@@ -13135,8 +13134,7 @@ public:
                         userIterate(srcp, WidthVP{SELF, FINAL, STREAM_USE_ASSIGN}.p());
                         AstConst* const zerop
                             = new AstConst{flp, AstConst::WidthedValue{}, padWidth, 0};
-                        srcp = VN_IS(srcp, StreamR) ? new AstConcat{flp, zerop, srcp}
-                                                    : new AstConcat{flp, srcp, zerop};
+                        srcp = new AstConcat{flp, srcp, zerop};
                         srcp->didWidth(true);
                     }
                 } else if (!lowerAsFixedAggregate(lhsDTypeSkippedRefp)

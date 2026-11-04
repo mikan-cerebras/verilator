@@ -238,12 +238,12 @@ module t;
     `checkh(q8[0], w80[79:72]);
     `checkh(q8[9], w80[7:0]);
 
-    // Zero-filled to a whole number of elements, '>>' on the left, '<<' on the right
+    // Zero-filled on the right to a whole number of elements
     dyn12 = {>>{w40}};
     `checkh(dyn12.size(), 4);
-    `checkh(dyn12[0], {8'h0, w40[39:36]});
-    `checkh(dyn12[1], w40[35:24]);
-    `checkh(dyn12[3], w40[11:0]);
+    `checkh(dyn12[0], w40[39:28]);
+    `checkh(dyn12[1], w40[27:16]);
+    `checkh(dyn12[3], {w40[3:0], 8'h0});
     s40 = {<<3{w40}};
     dyn12 = {<<3{w40}};
     `checkh(dyn12.size(), 4);
@@ -256,8 +256,8 @@ module t;
     `checkh(q8[4], s40[7:0]);
     q70 = {>>{w80}};
     `checkh(q70.size(), 2);
-    `checkh(q70[0], {60'h0, w80[79:70]});
-    `checkh(q70[1], w80[69:0]);
+    `checkh(q70[0], w80[79:10]);
+    `checkh(q70[1], {w80[9:0], 60'h0});
     s80 = {<<5{w80}};
     q70 = {<<5{w80}};
     `checkh(q70.size(), 2);
