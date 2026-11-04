@@ -10893,6 +10893,15 @@ class WidthVisitor final : public VNVisitor {
         }
         return false;  // No change
     }
+    bool isBaseClassRecurse(const AstClass* const cls1p, const AstClass* const cls2p) {
+        // Returns true if cls1p and cls2p are equal or if cls1p is a base class of cls2p
+        if (cls1p == cls2p) return true;
+        for (const AstClassExtends* cextp = cls2p->extendsp(); cextp;
+             cextp = VN_CAST(cextp->nextp(), ClassExtends)) {
+            if (isBaseClassRecurse(cls1p, cextp->classp())) return true;
+        }
+        return false;
+    }
     // Lines to end a message on nodep with the data types of its operands
     static string warnDTypes(const AstNode* nodep, const AstNodeDType* lhsDtp,
                              const AstNodeDType* rhsDtp, const string& lhsName = "Left-hand",
@@ -11016,7 +11025,7 @@ class WidthVisitor final : public VNVisitor {
                     = isOutputArg ? rhsClassRefp->classp() : lhsClassRefp->classp();
                 const AstClass* const srcp
                     = isOutputArg ? lhsClassRefp->classp() : rhsClassRefp->classp();
-                if (AstClass::isClassExtendedFrom(srcp, dstp)) return rhsp;
+                if (isBaseClassRecurse(dstp, srcp)) return rhsp;
             } else if (rhsp->isNull()) {
                 return rhsp;
             }

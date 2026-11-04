@@ -1187,14 +1187,11 @@ bool AstClass::isCacheableChild(const AstNode* nodep) {
            || VN_IS(nodep, CFunc);
 }
 bool AstClass::isClassExtendedFrom(const AstClass* refClassp, const AstClass* baseClassp) {
-    // Follows every extends/implements, as interface classes allow multiple inheritance
+    // TAIL RECURSIVE
     if (!refClassp || !baseClassp) return false;
     if (refClassp == baseClassp) return true;
-    for (const AstClassExtends* extp = refClassp->extendsp(); extp;
-         extp = VN_AS(extp->nextp(), ClassExtends)) {
-        if (isClassExtendedFrom(extp->classp(), baseClassp)) return true;
-    }
-    return false;
+    if (!refClassp->extendsp()) return false;
+    return isClassExtendedFrom(refClassp->extendsp()->classp(), baseClassp);
 }
 AstClass* AstClassExtends::classOrNullp() const {
     const AstNodeDType* const dtp = dtypep() ? dtypep() : childDTypep();
