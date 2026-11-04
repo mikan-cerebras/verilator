@@ -2107,17 +2107,33 @@ class ConstraintExprVisitor final : public VNVisitor {
         return formatp;
     }
 
-    // Return a random array index widened to the index sort of SMT arrays
+    // Return a random array index in the index sort of solver arrays
     static AstNodeExpr* newSmtIndexp(AstNodeExpr* indexp, bool isSigned, int sortWidth = 32) {
-        if (indexp->width() >= sortWidth) return indexp;
-        AstNodeExpr* extendp;
-        if (isSigned) {
-            extendp = new AstExtendS{indexp->fileline(), indexp, sortWidth};
+        FileLine* const fl = indexp->fileline();
+        const int width = indexp->width();
+        AstNodeExpr* newp;
+        if (width < sortWidth) {
+            newp = isSigned ? static_cast<AstNodeExpr*>(new AstExtendS{fl, indexp, sortWidth})
+                            : new AstExtend{fl, indexp, sortWidth};
+        } else if (width > sortWidth) {
+            // An index with any bit set above the sort's width is out of range, so map it to
+            // the out of range all-ones index rather than truncate it into range
+            AstSel* const highp
+                = new AstSel{fl, indexp->cloneTreePure(false), sortWidth, width - sortWidth};
+            AstEq* const inRangep = new AstEq{
+                fl, highp, new AstConst{fl, AstConst::WidthedValue{}, width - sortWidth, 0}};
+            AstSel* const lowp = new AstSel{fl, indexp, 0, sortWidth};
+            highp->user1(true);
+            inRangep->user1(true);
+            lowp->user1(true);
+            V3Number allOnes{indexp, sortWidth};
+            allOnes.setAllBits1();
+            newp = new AstCond{fl, inRangep, lowp, new AstConst{fl, allOnes}};
         } else {
-            extendp = new AstExtend{indexp->fileline(), indexp, sortWidth};
+            return indexp;
         }
-        extendp->user1(true);
-        return extendp;
+        newp->user1(true);
+        return newp;
     }
     // Width of the SMT index sort of the array selp selects from
     static int smtIndexWidth(AstNode* selp) {
@@ -3359,12 +3375,8 @@ class ConstraintExprVisitor final : public VNVisitor {
             if (keyIsRand) {
                 // A random key stays an SMT expression, in the solver's key width
                 VNRelinker handle;
-                AstNodeExpr* idxp = nodep->bitp()->unlinkFrBack(&handle);
-                const int keyWidth = keySmtWidth(keyDtp);
-                if (idxp->width() < keyWidth) {
-                    idxp = new AstExtend{fl, idxp, keyWidth};
-                    idxp->user1(true);
-                }
+                AstNodeExpr* const idxp = newSmtIndexp(nodep->bitp()->unlinkFrBack(&handle), false,
+                                                       keySmtWidth(keyDtp));
                 handle.relink(idxp);
                 newp = editSMT(nodep, nodep->fromp(), idxp);
             } else if (keyIsIntegral) {
@@ -3476,14 +3488,8 @@ class ConstraintExprVisitor final : public VNVisitor {
             unsupportedStateArraySel(nodep);
         } else if (indexIsRand) {
             // Index depends on rand variable -- keep as SMT symbol.
-            // The offset from the low bound is unsigned, even when computed as signed. Array
-            // index sort is 32-bit, so wider indices are truncated, which for an integral
-            // element are used only when in range.
-            AstNodeExpr* indexp = newSmtIndexp(nodep->bitp()->unlinkFrBack(&handle), false);
-            if (indexp->width() > 32) {
-                indexp = new AstSel{fl, indexp, 0, 32};
-                indexp->user1(true);
-            }
+            // The offset from the low bound is unsigned, even when computed as signed
+            AstNodeExpr* const indexp = newSmtIndexp(nodep->bitp()->unlinkFrBack(&handle), false);
             handle.relink(indexp);
             AstSFormatF* const newp = editSMT(nodep, nodep->fromp(), indexp);
             renameArrayExpr(newp, objectElem);
