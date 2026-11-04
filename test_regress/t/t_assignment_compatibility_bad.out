@@ -5,12 +5,6 @@
    35 |   logic unpackedF[3] = unpackedA;
       |                        ^~~~~~~~~
         ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
-%Error: t/t_assignment_compatibility_bad.v:36:31: Assignment between 2-state and 4-state types requires equivalent element types (IEEE 1800-2023 6.22.2, 7.6)
-                                                : ... note: In instance 't'
-                                                : ... Left-hand data type: 'bit$[0:1]' (2-state)
-                                                : ... Right-hand data type: 'logic$[0:1]' (4-state)
-   36 |   bit unpackedG[2] = unpackedB[0:1];
-      |                               ^
 %Error: t/t_assignment_compatibility_bad.v:36:31: Illegal assignment: Array element types are not equivalent (IEEE 1800-2023 6.22.2)
                                                 : ... note: In instance 't'
                                                 : ... Left-hand data type: 'bit$[0:1]' (2-state)
@@ -59,12 +53,6 @@
                                                 : ... Right-hand data type: 'logic$[string]'
    43 |   assign unpackedA = assocArrayA;
       |                    ^
-%Error: t/t_assignment_compatibility_bad.v:44:17: Assignment between 2-state and 4-state types requires equivalent element types (IEEE 1800-2023 6.22.2, 7.6)
-                                                : ... note: In instance 't'
-                                                : ... Left-hand data type: 'logic$[$]' (4-state)
-                                                : ... Right-hand data type: 'bit$[$]' (2-state)
-   44 |   assign queueA = queueB;
-      |                 ^
 %Error: t/t_assignment_compatibility_bad.v:44:17: Illegal assignment: Array element types are not equivalent (IEEE 1800-2023 6.22.2)
                                                 : ... note: In instance 't'
                                                 : ... Left-hand data type: 'logic$[$]' (4-state)
@@ -177,23 +165,11 @@
                                                 : ... Right-hand data type: 'int$[]'
    87 |     dynRealA = dynIntA;
       |              ^
-%Error: t/t_assignment_compatibility_bad.v:88:14: Assignment between 2-state and 4-state types requires equivalent element types (IEEE 1800-2023 6.22.2, 7.6)
-                                                : ... note: In instance 't'
-                                                : ... Left-hand data type: 'real$[]' (2-state)
-                                                : ... Right-hand data type: 'logic[3:0][1:0]$[]' (4-state)
-   88 |     dynRealA = dynPackA;
-      |              ^
 %Error: t/t_assignment_compatibility_bad.v:88:14: Illegal assignment: Array element types are not equivalent (IEEE 1800-2023 6.22.2)
                                                 : ... note: In instance 't'
                                                 : ... Left-hand data type: 'real$[]' (2-state)
                                                 : ... Right-hand data type: 'logic[3:0][1:0]$[]' (4-state)
    88 |     dynRealA = dynPackA;
-      |              ^
-%Error: t/t_assignment_compatibility_bad.v:89:14: Assignment between 2-state and 4-state types requires equivalent element types (IEEE 1800-2023 6.22.2, 7.6)
-                                                : ... note: In instance 't'
-                                                : ... Left-hand data type: 'logic[3:0][1:0]$[]' (4-state)
-                                                : ... Right-hand data type: 'real$[]' (2-state)
-   89 |     dynPackA = dynRealA;
       |              ^
 %Error: t/t_assignment_compatibility_bad.v:89:14: Illegal assignment: Array element types are not equivalent (IEEE 1800-2023 6.22.2)
                                                 : ... note: In instance 't'
