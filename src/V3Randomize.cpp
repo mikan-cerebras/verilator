@@ -6205,6 +6205,14 @@ class RandomizeVisitor final : public VNVisitor {
         callp->add(".next(__Vm_rng)");
         return callp;
     }
+    // Solve for the element values if the size solve succeeded
+    static AstIf* newFinalSolvep(FileLine* fl, AstVar* sizeOkVarp, AstVar* finalOkVarp,
+                                 AstVar* genp) {
+        // A failed size solve already reported why, and the call fails anyway
+        return new AstIf{fl, new AstVarRef{fl, sizeOkVarp, VAccess::READ},
+                         new AstAssign{fl, new AstVarRef{fl, finalOkVarp, VAccess::WRITE},
+                                       newSolverCallp(genp)}};
+    }
 
     AstVar* addSizeSolvep(AstFunc* const randomizep, AstVar* const genp,
                           AstVar* const randModeVarp,
@@ -6409,8 +6417,7 @@ class RandomizeVisitor final : public VNVisitor {
                                                        nodep->findBasicDType(VBasicDTypeKwd::BIT)};
                 finalOkVarp->funcLocal(true);
                 randomizep->addStmtsp(finalOkVarp);
-                randomizep->addStmtsp(new AstAssign{
-                    fl, new AstVarRef{fl, finalOkVarp, VAccess::WRITE}, newSolverCallp(genp)});
+                randomizep->addStmtsp(newFinalSolvep(fl, sizeOkVarp, finalOkVarp, genp));
 
                 beginValp = new AstAnd{fl, new AstVarRef{fl, sizeOkVarp, VAccess::READ},
                                        new AstVarRef{fl, finalOkVarp, VAccess::READ}};
@@ -7110,9 +7117,7 @@ class RandomizeVisitor final : public VNVisitor {
             }
 
             // Final solve: element values with sizes pinned
-            AstCExpr* const solverCall2p = newSolverCallp(localGenp);
-            randomizeFuncp->addStmtsp(
-                new AstAssign{fl, new AstVarRef{fl, finalOkVarp, VAccess::WRITE}, solverCall2p});
+            randomizeFuncp->addStmtsp(newFinalSolvep(fl, sizeOkVarp, finalOkVarp, localGenp));
 
             randomizeFuncp->addStmtsp(new AstAssign{
                 fl, new AstVarRef{fl, retVarp, VAccess::WRITE},
