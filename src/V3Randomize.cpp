@@ -271,6 +271,13 @@ static AstVar* findStaticRandModeVar(VMemberMap& memberMap, AstClass* classp) {
     }
 }
 
+// A constraint made by cloning the constraint of an object, or of the objects of an array
+struct ClonedConstraint final {
+    AstNodeExpr* objp;  // The object, or object array, it was cloned for
+    AstConstraint* origp;  // The constraint it was cloned from
+};
+using ClonedConstraints = std::map<const AstConstraint*, ClonedConstraint>;
+
 // Whether the handles on the path objp have rand_mode on (if modes) and are not null (if
 // nonNull), nullptr if nothing to check
 static AstNodeExpr* newHandlesActivep(VMemberMap& memberMap, AstNodeExpr* objp, bool modes,
@@ -518,8 +525,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
     bool m_inStdWith = false;  // True when inside a 'with {}' clause
     std::set<AstNodeVarRef*> m_staticRefs;  // References to static variables under `with` clauses
     AstWith* m_withp = nullptr;  // Current 'with' constraint node
-    // Constraints made by cloning -> the object (or object array) they were cloned for
-    std::map<const AstConstraint*, AstNodeExpr*>& m_cloneObjps;
+    ClonedConstraints& m_cloneObjps;  // Constraints made by cloning
     std::unordered_set<AstVar*>& m_elemModeArrays;  // Arrays with per-element rand_mode()
     AstClass* m_withClassp = nullptr;  // Class of obj in the current obj.randomize() with
 
@@ -764,10 +770,10 @@ class RandomizeMarkVisitor final : public VNVisitor {
         }
         return cloneConstrp;
     }
-    // Add a constraint cloned for the object (or object array) objp to targetClassp
+    // Add a constraint cloned from origp for the object (or object array) objp to targetClassp
     void addClonedConstraint(AstClass* targetClassp, AstConstraint* cloneConstrp,
-                             AstNodeExpr* objp) {
-        m_cloneObjps.emplace(cloneConstrp, objp->cloneTree(false));
+                             AstConstraint* origp, AstNodeExpr* objp) {
+        m_cloneObjps.emplace(cloneConstrp, ClonedConstraint{objp->cloneTree(false), origp});
         targetClassp->addMembersp(cloneConstrp);
         // Immediately iterate to set user1 marks
         iterateConst(cloneConstrp);
@@ -792,7 +798,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
         AstNodeExpr* const objp = buildMemberSelChain(rootVarRefp, newPath);
         if (AstConstraint* const cloneConstrp = cloneObjectConstraint(
                 constrp, objp, clonePathPrefix(rootVarRefp, newPath), targetClassp)) {
-            addClonedConstraint(targetClassp, cloneConstrp, objp);
+            addClonedConstraint(targetClassp, cloneConstrp, constrp, objp);
         }
         VL_DO_DANGLING(objp->deleteTree(), objp);
     }
@@ -887,7 +893,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
             AstNode* const itemsp = cloneConstrp->itemsp()->unlinkFrBackWithNext();
             cloneConstrp->addItemsp(new AstConstraintForeach{
                 fl, new AstForeachHeader{fl, arrRefp->cloneTree(false), idxVarp}, itemsp});
-            addClonedConstraint(targetClassp, cloneConstrp, arrRefp);
+            addClonedConstraint(targetClassp, cloneConstrp, constrp, arrRefp);
         }
     }
 
@@ -1362,7 +1368,7 @@ class RandomizeMarkVisitor final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    RandomizeMarkVisitor(AstNode* nodep, std::map<const AstConstraint*, AstNodeExpr*>& cloneObjps,
+    RandomizeMarkVisitor(AstNode* nodep, ClonedConstraints& cloneObjps,
                          std::unordered_set<AstVar*>& elemModeArrays)
         : m_cloneObjps{cloneObjps}
         , m_elemModeArrays{elemModeArrays} {
@@ -5072,8 +5078,7 @@ class RandomizeVisitor final : public VNVisitor {
 
     // STATE
     V3UniqueNames m_inlineUniqueNames;  // For generating unique function names
-    // Constraints cloned from objects -> the object (or object array) they were cloned for
-    const std::map<const AstConstraint*, AstNodeExpr*>& m_cloneObjps;
+    const ClonedConstraints& m_cloneObjps;  // Constraints cloned from objects
     V3UniqueNames m_randArrayUniqueNames{"__Vrandarr"};  // Random array loop indices
     V3UniqueNames m_modeUniqueNames{"__Vmode"};  // For generating unique rand/constraint
                                                  // mode state var names
@@ -5610,8 +5615,8 @@ class RandomizeVisitor final : public VNVisitor {
         // skipped for those elements.
         const auto it = m_cloneObjps.find(constrp);
         if (it == m_cloneObjps.end()) return;
-        AstMemberSel* const selp = VN_CAST(it->second, MemberSel);
-        AstVar* const arrVarp = selp ? selp->varp() : VN_AS(it->second, VarRef)->varp();
+        AstMemberSel* const selp = VN_CAST(it->second.objp, MemberSel);
+        AstVar* const arrVarp = selp ? selp->varp() : VN_AS(it->second.objp, VarRef)->varp();
         if (VN_IS(arrVarp->dtypep()->skipRefp(), ClassRefDType)) return;  // Cloned for an object
         AstNodeExpr* const objp = selp ? selp->fromp() : nullptr;
         AstForeach* const foreachp = VN_AS(VN_AS(constrp->itemsp(), Begin)->stmtsp(), Foreach);
@@ -5626,7 +5631,11 @@ class RandomizeVisitor final : public VNVisitor {
                 fl, condp,
                 new AstNot{fl, newElemModeOffp(newMemberRefp(fl, objp, modeVarp), offsetp)}};
         }
-        VL_DO_DANGLING(offsetp->deleteTree(), offsetp);
+        AstNodeExpr* const elemp = newElemp(fl, objp, arrVarp, offsetp);
+        if (AstNodeExpr* const modep = newObjConstraintModep(elemp, it->second.origp)) {
+            condp = new AstLogAnd{fl, condp, modep};
+        }
+        VL_DO_DANGLING(elemp->deleteTree(), elemp);
         AstNode* const bodyp = foreachp->bodyp()->unlinkFrBackWithNext();
         foreachp->addBodyp(new AstIf{fl, condp, bodyp});
     }
@@ -5717,7 +5726,37 @@ class RandomizeVisitor final : public VNVisitor {
         m_elemModePinPath.erase(classp);
         return stmtsp;
     }
+    // Read of the constraint_mode() of constraint constrp of objp, nullptr if never set
+    AstNodeExpr* newObjConstraintModep(AstNodeExpr* const objp, AstConstraint* const constrp) {
+        const RandomizeMode mode = {.asUQuad = constrp->user1()};
+        if (!mode.usesMode) return nullptr;
+        FileLine* const fl = objp->fileline();
+        AstClass* const classp = VN_AS(objp->dtypep()->skipRefp(), ClassRefDType)->classp();
+        AstNodeExpr* modesp;
+        if (constrp->isStatic()) {
+            AstVar* const modeVarp = getStaticConstraintModeVar(classp);
+            modesp = new AstVarRef{fl, VN_AS(modeVarp->user2p(), NodeModule), modeVarp,
+                                   VAccess::READ};
+        } else {
+            AstVar* const modeVarp = getConstraintModeVar(classp);
+            modesp = new AstMemberSel{fl, objp->cloneTree(false), modeVarp};
+        }
+        AstCMethodHard* const atp
+            = new AstCMethodHard{fl, modesp, VCMethod::ARRAY_AT, new AstConst{fl, mode.index}};
+        atp->dtypeSetUInt32();
+        return atp;
+    }
     AstNode* wrapIfConstraintMode(AstClass* classp, AstConstraint* const constrp, AstNode* stmtp) {
+        const auto it = m_cloneObjps.find(constrp);
+        if (it != m_cloneObjps.end()) {
+            // The constraint of an object can be off in that object (IEEE 1800-2023 18.9), but
+            // not in the object constraining it. skipInactiveElems checks the objects of an
+            // array.
+            AstNodeExpr* const objp = it->second.objp;
+            if (!VN_IS(objp->dtypep()->skipRefp(), ClassRefDType)) return stmtp;
+            AstNodeExpr* const modep = newObjConstraintModep(objp, it->second.origp);
+            return modep ? new AstIf{stmtp->fileline(), modep, stmtp} : stmtp;
+        }
         const RandomizeMode rmode = {.asUQuad = constrp->user1()};
         AstVar* const modeVarp = constrp->isStatic() ? getStaticConstraintModeVar(classp)
                                                      : getConstraintModeVar(classp);
@@ -7955,7 +7994,7 @@ class RandomizeVisitor final : public VNVisitor {
                     const auto it = m_cloneObjps.find(constrp);
                     if (it != m_cloneObjps.end()) {
                         if (AstNodeExpr* const activep
-                            = newHandlesActivep(m_memberMap, it->second, true, true)) {
+                            = newHandlesActivep(m_memberMap, it->second.objp, true, true)) {
                             stmtsp = new AstIf{constrp->fileline(), activep, stmtsp};
                         }
                     }
@@ -8972,8 +9011,7 @@ class RandomizeVisitor final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    RandomizeVisitor(AstNetlist* nodep,
-                     const std::map<const AstConstraint*, AstNodeExpr*>& cloneObjps,
+    RandomizeVisitor(AstNetlist* nodep, const ClonedConstraints& cloneObjps,
                      const std::unordered_set<AstVar*>& elemModeArrays)
         : m_inlineUniqueNames{"__Vrandwith"}
         , m_cloneObjps{cloneObjps}
@@ -9097,11 +9135,11 @@ void V3Randomize::randomizeNetlist(AstNetlist* nodep) {
     UINFO(2, __FUNCTION__ << ":");
     {
         // Keyed by constraints, which are not deleted until RandomizeVisitor's end
-        std::map<const AstConstraint*, AstNodeExpr*> cloneObjps;
+        ClonedConstraints cloneObjps;
         std::unordered_set<AstVar*> elemModeArrays;
         const RandomizeMarkVisitor markVisitor{nodep, cloneObjps, elemModeArrays};
         const RandomizeVisitor randomizeVisitor{nodep, cloneObjps, elemModeArrays};
-        for (const auto& it : cloneObjps) it.second->deleteTree();
+        for (const auto& it : cloneObjps) it.second.objp->deleteTree();
     }
     addEnumDomains(nodep);
     V3Global::dumpCheckGlobalTree("randomize", 0, dumpTreeEitherLevel() >= 3);
