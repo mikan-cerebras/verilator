@@ -8550,6 +8550,7 @@ class RandomizeVisitor final : public VNVisitor {
                         fromp->v3warn(E_UNSUPPORTED, "Unsupported: Unsupported size constraint "
                                                      "inside 'with' statement of type "
                                                          << fromp->dtypep()->prettyTypeName());
+                        continue;
                     }
                 } else if (AstVarRef* const varRefp = VN_CAST(rootExprp, VarRef)) {
                     arrVarp = varRefp->varp();
