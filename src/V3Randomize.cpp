@@ -3508,15 +3508,15 @@ class ConstraintExprVisitor final : public VNVisitor {
                       : new AstSFormatF{bitp->fileline(), objectElem ? "%0x" : "%x", false, bitp};
             AstSFormatF* const herep
                 = new AstSFormatF{nodep->fileline(), "%s.%s", false, bitFormatp};
-            const AstSub* const subp = VN_CAST(bitp, Sub);
-            if (AstSel* const selp = VN_CAST(bitp, Sel)) {
-                m_nestedAccessp->addVarNamePart(herep, selp->fromp()->name());
-            } else if (subp && VN_IS(subp->lhsp(), VarRef) && VN_IS(subp->rhsp(), Const)) {
+            // The index, under the truncation above
+            const AstNodeExpr* const namedp = VN_IS(bitp, Sel) ? VN_AS(bitp, Sel)->fromp() : bitp;
+            const AstSub* const subp = VN_CAST(namedp, Sub);
+            if (subp && VN_IS(subp->lhsp(), VarRef) && VN_IS(subp->rhsp(), Const)) {
                 // A variable index into an array with a nonzero low bound
                 m_nestedAccessp->addVarNamePart(herep,
                                                 subp->lhsp()->name() + "-" + subp->rhsp()->name());
             } else {
-                m_nestedAccessp->addVarNamePart(herep, bitp->name());
+                m_nestedAccessp->addVarNamePart(herep, namedp->name());
             }
             if (indexIsRand) {
                 nodep->v3warn(E_UNSUPPORTED,
