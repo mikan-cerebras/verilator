@@ -804,10 +804,12 @@ void AstBegin::dump(std::ostream& str) const {
     Super::dump(str);
     if (implied()) str << " [IMPLIED]";
     if (needProcess()) str << " [NPRC]";
+    if (disableWrapper()) str << " [DISABLEWRAP]";
 }
 void AstBegin::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, implied);
     dumpJsonBoolFuncIf(str, needProcess);
+    dumpJsonBoolFuncIf(str, disableWrapper);
     dumpJsonGen(str);
 }
 const char* AstCAwait::broken() const {
@@ -1140,6 +1142,13 @@ bool AstClass::isCacheableChild(const AstNode* nodep) {
            || VN_IS(nodep, EnumItemRef)
            || (VN_IS(nodep, NodeFTask) && !VN_AS(nodep, NodeFTask)->isExternProto())
            || VN_IS(nodep, CFunc);
+}
+bool AstClass::isClassDerivedFrom(const AstClass* refClassp, const AstClass* baseClassp) {
+    if (refClassp == baseClassp) return true;
+    for (const AstClassExtends* const extp : refClassp->extendspList()) {
+        if (isClassDerivedFrom(extp->classp(), baseClassp)) return true;
+    }
+    return false;
 }
 bool AstClass::isClassExtendedFrom(const AstClass* refClassp, const AstClass* baseClassp) {
     // TAIL RECURSIVE
@@ -1588,11 +1597,13 @@ void AstCoverBin::dump(std::ostream& str) const {
     str << " " << m_binsType.ascii();
     if (m_isArray) str << "[]";
     if (m_isWildcard) str << "[*]";
+    if (m_isSetExpr) str << " [SETEXPR]";
 }
 void AstCoverBin::dumpJson(std::ostream& str) const {
     Super::dumpJson(str);
     dumpJsonBoolIf(str, "isArray", isArray());
     dumpJsonBoolIf(str, "isWildcard", isWildcard());
+    dumpJsonBoolIf(str, "isSetExpr", isSetExpr());
     str << ", \"binsType\": \"" << binsType().ascii() << "\"";
 }
 void AstCoverBinsof::dump(std::ostream& str) const {
@@ -1863,12 +1874,11 @@ AstNodeBiop* AstEqWild::newTyped(FileLine* fl, AstNodeExpr* lhsp, AstNodeExpr* r
         return new AstEqWild{fl, lhsp, rhsp};
     }
 }
-AstExecGraph::AstExecGraph(FileLine* fileline, const string& name,
-                           AstVarScope* trigVscp) VL_MT_DISABLED
-    : ASTGEN_SUPER_ExecGraph(fileline),
+AstExecGraph::AstExecGraph(FileLine* fl, const string& name, AstVarScope* trigVscp) VL_MT_DISABLED
+    : ASTGEN_SUPER_ExecGraph(fl),
       m_depGraphp{new V3Graph},
       m_name{name} {
-    triggerp(new AstVarRef{fileline, trigVscp, VAccess::READ});
+    triggerp(new AstVarRef{fl, trigVscp, VAccess::READ});
 }
 const char* AstExecGraph::broken() const {
     BROKEN_RTN(!m_depGraphp);
@@ -2046,8 +2056,8 @@ AstNodeExpr* AstInsideRange::newAndFromInside(AstNodeExpr* exprp, AstNodeExpr* l
     // Normal case: [N:M] - check expr >= lhs && expr <= rhs
     AstNodeExpr* const ap = new AstGte{fileline(), exprp, lhsp};
     AstNodeExpr* lteLhsp;
-    if (const AstExprStmt* const exprStmt = VN_CAST(exprp, ExprStmt)) {
-        lteLhsp = exprStmt->resultp()->cloneTreePure(true);
+    if (const AstExprStmt* const exprStmtp = VN_CAST(exprp, ExprStmt)) {
+        lteLhsp = exprStmtp->resultp()->cloneTreePure(true);
     } else {
         lteLhsp = exprp->cloneTreePure(true);
     }
@@ -3342,6 +3352,7 @@ void AstNodeModule::dump(std::ostream& str) const {
         str << " [RECURSIVE]";
     }
     if (parameterizedTemplate()) str << " [PAR-TEMPL]";
+    if (threadsGroup()) str << " [THREADS-GROUP]";
     if (verilatorLib()) str << " [VERILATOR-LIB]";
     if (unconnectedDrive().isTrue()) str << " [UCDRV]";
     if (!lifetime().isNone()) str << " [" << lifetime().ascii() << "] ";
@@ -3359,6 +3370,7 @@ void AstNodeModule::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, dead);
     dumpJsonBoolFuncIf(str, recursiveClone);
     dumpJsonBoolFuncIf(str, recursive);
+    dumpJsonBoolFuncIf(str, threadsGroup);
     dumpJsonBoolFuncIf(str, verilatorLib);
     dumpJsonStr(str, "unconnectedDrive", unconnectedDrive().ascii());
     dumpJsonStr(str, "lifetime", lifetime().ascii());
@@ -3816,10 +3828,10 @@ void AstSampled::dumpJson(std::ostream& str) const {
     dumpJsonGen(str);
 }
 AstActive* AstScope::comboActivep(bool create) {
-    // Use an existing one
+    // Use an existing one, but not the active of an AlwaysPostponed, which must stay alone
     for (AstNode* const nodep : blockspList()) {
         AstActive* const activep = VN_CAST(nodep, Active);
-        if (activep && activep->hasCombo()) return activep;
+        if (activep && activep->hasCombo() && !activep->isPostponed()) return activep;
     }
     if (!create) return nullptr;
     // Otherwise create a new one

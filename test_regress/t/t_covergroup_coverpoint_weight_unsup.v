@@ -5,16 +5,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 module t;
+  bit sample;
 
-  reg g;
+  covergroup cg;
+    cp: coverpoint sample;
+  endgroup
 
-  task automatic tsk;
-    reg l;
-    begin : cont_block
-      assign g = signed'(l);  // <--- BAD: using automatic in cont assignment
-    end
-  endtask
+  cg cov = new();
 
-  initial $stop;
-
+  initial begin
+    cov.cp.option.weight <= 0;
+    assign cov.cp.option.weight = 0;
+    force cov.cp.option.weight = 0;
+  end
 endmodule

@@ -110,6 +110,11 @@ static void addFlags(AstNode* const nodep, uint8_t flags) { nodep->user2Or(flags
 // Check if a node has ALL of the expected flags set
 static bool hasFlags(AstNode* const nodep, uint8_t flags) { return !(~nodep->user2() & flags); }
 
+static AstNode* takeDeferredAssertFlush(AstNode* nodep) {
+    AstDeferredAssertFlush* const flushp = VN_CAST(nodep, DeferredAssertFlush);
+    return flushp ? flushp->unlinkFrBack() : nullptr;
+}
+
 // ######################################################################
 //  Detect nodes affected by timing and/or requiring a process
 
@@ -219,9 +224,9 @@ class TimingSuspendableVisitor final : public VNVisitor {
         return nodep->user4u().to<NeedsProcDepVtx*>();
     }
     // Pass timing flag between nodes
-    bool passFlag(const AstNode* from, AstNode* to, NodeFlag flag) {
-        if ((from->user2() & flag) && !(to->user2() & flag)) {
-            addFlags(to, flag);
+    bool passFlag(const AstNode* fromp, AstNode* top, NodeFlag flag) {
+        if ((fromp->user2() & flag) && !(top->user2() & flag)) {
+            addFlags(top, flag);
             return true;
         }
         return false;
@@ -289,6 +294,9 @@ class TimingSuspendableVisitor final : public VNVisitor {
             }
             if (!constp->isZero()) {
                 // Remove AstWait before we track process as T_SUSPENDER
+                if (AstNode* const flushp = takeDeferredAssertFlush(nodep->stmtsp())) {
+                    VL_DO_DANGLING(pushDeletep(flushp), flushp);
+                }
                 if (AstNode* const stmtsp = nodep->stmtsp()) {
                     stmtsp->unlinkFrBackWithNext();
                     nodep->replaceWith(stmtsp);
@@ -318,10 +326,10 @@ class TimingSuspendableVisitor final : public VNVisitor {
         if (m_classp->extendsp()) extends.push(m_classp->extendsp());
 
         while (!extends.empty()) {
-            AstClassExtends* ext_list = extends.front();
+            AstClassExtends* ext_listp = extends.front();
             extends.pop();
 
-            for (AstClassExtends* cextp = ext_list; cextp;
+            for (AstClassExtends* cextp = ext_listp; cextp;
                  cextp = VN_AS(cextp->nextp(), ClassExtends)) {
                 // TODO: It is possible that a methods the same name in the base class is not
                 // actually overridden by our method. If this causes a problem, traverse to
@@ -337,8 +345,8 @@ class TimingSuspendableVisitor final : public VNVisitor {
                     new V3GraphEdge{&m_procGraph, pVxp, overriddenPVxp, P_SIGNATURE};
                     new V3GraphEdge{&m_procGraph, overriddenPVxp, pVxp, P_SIGNATURE};
                 } else {
-                    AstClassExtends* more_extends = cextp->classp()->extendsp();
-                    if (more_extends) extends.push(more_extends);
+                    AstClassExtends* more_extendsp = cextp->classp()->extendsp();
+                    if (more_extendsp) extends.push(more_extendsp);
                 }
             }
         }
@@ -431,14 +439,14 @@ public:
             DepVtx& depVtx = static_cast<DepVtx&>(vtx);
             // Find processes that'll allocate VlProcess
             if (hasFlags(depVtx.nodep(), T_FORCES_PROC)) {
-                propagateFlagsIf(&depVtx, T_FORCES_PROC, [&](const V3GraphEdge* e) -> bool {
-                    return !hasFlags(static_cast<DepVtx*>(e->fromp())->nodep(), T_ALLOCS_PROC);
+                propagateFlagsIf(&depVtx, T_FORCES_PROC, [&](const V3GraphEdge* ep) -> bool {
+                    return !hasFlags(static_cast<DepVtx*>(ep->fromp())->nodep(), T_ALLOCS_PROC);
                 });
             }
             // Mark nodes on paths between processes and statements that use VlProcess
             if (hasFlags(depVtx.nodep(), T_NEEDS_PROC)) {
-                propagateFlagsIf(&depVtx, T_NEEDS_PROC, [&](const V3GraphEdge* e) -> bool {
-                    return !hasFlags(static_cast<DepVtx*>(e->top())->nodep(), T_ALLOCS_PROC);
+                propagateFlagsIf(&depVtx, T_NEEDS_PROC, [&](const V3GraphEdge* ep) -> bool {
+                    return !hasFlags(static_cast<DepVtx*>(ep->top())->nodep(), T_ALLOCS_PROC);
                 });
             }
         }
@@ -447,8 +455,8 @@ public:
             // Mark nodes that will be emitted with a VlProcess argument
             if (hasFlags(depVtx.nodep(), T_ALLOCS_PROC | T_FORCES_PROC)) {
                 addFlags(depVtx.nodep(), T_HAS_PROC);
-                propagateFlagsReversedIf(&depVtx, T_HAS_PROC, [&](const V3GraphEdge* e) -> bool {
-                    return hasFlags(static_cast<DepVtx*>(e->fromp())->nodep(), T_NEEDS_PROC);
+                propagateFlagsReversedIf(&depVtx, T_HAS_PROC, [&](const V3GraphEdge* ep) -> bool {
+                    return hasFlags(static_cast<DepVtx*>(ep->fromp())->nodep(), T_NEEDS_PROC);
                 });
             }
         }
@@ -491,7 +499,6 @@ class TimingControlVisitor final : public VNVisitor {
     int m_forkCnt = 0;  // Number of forks inside a module
     bool m_underJumpBlock = false;  // True if we are inside of a jump-block
     bool m_underProcedure = false;  // True if we are under an always or initial
-    bool m_underIfaceCFunc = false;  // True if we are under a CFunc owned by an interface scope
     bool m_hasStaticZeroDelay = false;  // True if we have a static #0 delay
     std::vector<FileLine*> m_unknownDelayFlps;  // Locations of AstDelay with non-constant value
 
@@ -636,10 +643,10 @@ class TimingControlVisitor final : public VNVisitor {
                              new AstVarRef{flp, m_netlistp->nbaEventTriggerp(), VAccess::WRITE},
                              new AstConst{flp, AstConst::BitTrue{}}};
     }
-    // Returns true if we are under a class or interface function, or the tree references locals.
-    // These are cases where static, globally-evaluated triggers are not suitable.
+    // Returns true if we are under a class or the given tree has any references to locals. These
+    // are cases where static, globally-evaluated triggers are not suitable.
     bool needDynamicTrigger(AstNode* const nodep) const {
-        return m_classp || m_underIfaceCFunc || nodep->exists([](AstNode* const nodep) {
+        return m_classp || nodep->exists([](AstNode* const nodep) {
             if (AstNodeVarRef* varp = VN_CAST(nodep, NodeVarRef)) {
                 return varp->varp()->isFuncLocal();
             }
@@ -932,10 +939,8 @@ class TimingControlVisitor final : public VNVisitor {
     void visit(AstCFunc* nodep) override {
         VL_RESTORER(m_procp);
         VL_RESTORER(m_hasProcess);
-        VL_RESTORER(m_underIfaceCFunc);
         m_procp = nodep;
         m_hasProcess = hasFlags(nodep, T_HAS_PROC);
-        m_underIfaceCFunc = VN_IS(m_scopep->modp(), Iface);
         iterateChildren(nodep);
         if (hasFlags(nodep, T_HAS_PROC)) nodep->setNeedProcess();
         if (!(hasFlags(nodep, T_SUSPENDEE))) return;
@@ -1389,6 +1394,11 @@ class TimingControlVisitor final : public VNVisitor {
                            new AstLogAnd{flp, didNotInitp, firstIterp}};
         alwaysp->addStmtsp(new AstIf{flp, schedCondp, forkp->unlinkFrBack()});
     }
+    void visit(AstDeferredAssertFlush* nodep) override {
+        iterateChildren(nodep);
+        nodep->replaceWith(nodep->stmtsp()->unlinkFrBackWithNext());
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+    }
     void visit(AstDisableFork* nodep) override {
         if (m_hasProcess) return;
         // never reached by any process; remove to avoid compilation error
@@ -1398,7 +1408,8 @@ class TimingControlVisitor final : public VNVisitor {
         if (m_hasProcess) {
             FileLine* const flp = nodep->fileline();
             AstCExpr* const exprp = new AstCExpr{flp, "vlProcess->completedFork()", 1};
-            AstWait* const waitp = new AstWait{flp, exprp, nullptr};
+            AstWait* const waitp
+                = new AstWait{flp, exprp, takeDeferredAssertFlush(nodep->nextp())};
             nodep->replaceWith(waitp);
         } else {
             // never reached by any process; remove to avoid compilation error
@@ -1410,6 +1421,7 @@ class TimingControlVisitor final : public VNVisitor {
         // Wait on changed events related to the vars in the wait statement
         UINFO(9, "control-visit " << nodep);
         FileLine* const flp = nodep->fileline();
+        AstNode* const flushp = takeDeferredAssertFlush(nodep->stmtsp());
         AstNode* const stmtsp = nodep->stmtsp();
         if (stmtsp) stmtsp->unlinkFrBackWithNext();
         AstNodeExpr* const condp = V3Const::constifyEdit(nodep->condp()->unlinkFrBack());
@@ -1426,6 +1438,7 @@ class TimingControlVisitor final : public VNVisitor {
                 addDebugInfo(foreverMethodp);
                 AstCAwait* const awaitp = new AstCAwait{flp, foreverMethodp};
                 nodep->replaceWith(awaitp);
+                if (flushp) VL_DO_DANGLING(flushp->deleteTree(), flushp);
                 if (stmtsp) VL_DO_DANGLING(stmtsp->deleteTree(), stmtsp);
                 VL_DO_DANGLING(condp->deleteTree(), condp);
             } else {
@@ -1440,7 +1453,7 @@ class TimingControlVisitor final : public VNVisitor {
                 new AstEventControl{flp,
                                     new AstSenTree{flp, new AstSenItem{flp, VEdgeType::ET_TRUE,
                                                                        condp->cloneTree(false)}},
-                                    nullptr}};
+                                    flushp}};
             if (stmtsp) AstNode::addNext<AstNode, AstNode>(ifp, stmtsp);
             nodep->replaceWith(ifp);
         } else {
@@ -1456,6 +1469,7 @@ class TimingControlVisitor final : public VNVisitor {
             AstLoop* const loopp = new AstLoop{flp};
             loopp->addStmtsp(new AstLoopTest{flp, loopp, new AstLogNot{flp, condp}});
             loopp->addStmtsp(controlp);
+            if (flushp) controlp->addStmtsp(flushp);
             if (stmtsp) AstNode::addNext<AstNode, AstNode>(loopp, stmtsp);
             nodep->replaceWith(loopp);
         }

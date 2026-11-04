@@ -133,7 +133,7 @@ protected:
     const AstNodeModule* m_modp = nullptr;  // Current module being emitted
     const AstCFunc* m_cfuncp = nullptr;  // Current function being emitted
     bool m_instantiatesOwnProcess = false;  // Statement that instantiates its own process
-    const AstClassPackage* m_classOrPackage = nullptr;  // Pointer to current class or package
+    const AstClassPackage* m_classOrPackagep = nullptr;  // Pointer to current class or package
     string m_classOrPackageHash;  // Hash of class or package name
 
     bool constructorNeedsProcess(const AstClass* const classp) {
@@ -552,8 +552,13 @@ public:
     }
 
     void visit(AstCvtUnpackToQueue* nodep) override {
-        AstNodeDType* const elemDTypep = nodep->fromp()->dtypep()->subDTypep();
-        emitOpName(nodep, nodep->emitC(), nodep->fromp(), elemDTypep, nullptr);
+        const AstUnpackArrayDType* const arrayp
+            = VN_AS(nodep->fromp()->dtypep()->skipRefp(), UnpackArrayDType);
+        AstNodeDType* const elemDTypep = arrayp->subDTypep();
+        const string format = arrayp->declRange().ascending()
+                                  ? nodep->emitC()
+                                  : "VL_CVT_UNPACK_TO_Q_REVERSED(%P, %li)";
+        emitOpName(nodep, format, nodep->fromp(), elemDTypep, nullptr);
     }
     void visit(AstCvtQueueToUnpack* nodep) override {
         // Whether each unpacked dimension is reversed, the first for the outermost
@@ -878,14 +883,20 @@ public:
                 = VN_AS(nodep->dtypep()->skipRefp(), CoverCrossDType);
             puts("<" + cxdtypep->cppTemplateArgs() + ">");
         }
+        if (nodep->method() == VCMethod::RANDOMIZER_HARD) {
+            // Pins are (constraint, variables) or (constraint, variables, filename, line,
+            // source); the filename is located by position below
+            const size_t npins = nodep->pinspList().size();
+            UASSERT_OBJ(npins == 2 || npins == 5, nodep, "Unexpected hard() pin layout");
+        }
         puts("(");
         bool comma = false;
         int argNum = 0;
         for (AstNode* const subnodep : nodep->pinspList()) {
             if (comma) puts(", ");
-            if (nodep->method() == VCMethod::RANDOMIZER_HARD && argNum == 1) {
-                // For RANDOMIZER_HARD's filename argument (2nd arg after constraint),
-                // apply protect() similar to VL_STOP to handle --protected flag
+            if (nodep->method() == VCMethod::RANDOMIZER_HARD && argNum == 2) {
+                // For RANDOMIZER_HARD's filename argument (after the constraint and the
+                // variables it names), apply protect() similar to VL_STOP for --protected
                 if (const AstCExpr* const cexprp = VN_CAST(subnodep, CExpr)) {
                     // Extract filename from the CExpr (which contains "filename")
                     std::string filename;
@@ -1745,7 +1756,7 @@ public:
             emitOpName(nodep, nodep->emitC(), nodep->srcp(), nodep->countp(), nullptr);
         }
     }
-    void emitStreamR(AstStreamR* nodep, AstNode* parent) {
+    void emitStreamR(AstStreamR* nodep, AstNode* parentp) {
         //TODO: This might need to handle more cases like the visit(AstStreamR) function
         emitOpName(nodep, nodep->emitC(), nodep->lhsp(), nodep->rhsp(), nullptr);
     }

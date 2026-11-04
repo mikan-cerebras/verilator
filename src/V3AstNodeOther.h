@@ -298,6 +298,7 @@ public:
 class AstNodeFuncCovItem VL_NOT_FINAL : public AstNode {
     // Base class for functional coverage items (coverpoints, crosses)
     // @astgen ptr := m_instCoveragep : Optional[AstFunc]  // [V3Width] Its get_inst_coverage()
+    // @astgen ptr := m_optionVarp : Optional[AstVar]  // Generated option struct member
 protected:
     string m_name;  // Item name
 
@@ -313,6 +314,8 @@ public:
     bool maybePointedTo() const override { return true; }
     AstFunc* instCoveragep() const { return m_instCoveragep; }
     void instCoveragep(AstFunc* funcp) { m_instCoveragep = funcp; }
+    AstVar* optionVarp() const { return m_optionVarp; }
+    void optionVarp(AstVar* varp) { m_optionVarp = varp; }
 };
 class AstNodeGen VL_NOT_FINAL : public AstNode {
     // Generate construct
@@ -354,6 +357,7 @@ class AstNodeModule VL_NOT_FINAL : public AstNode {
     bool m_parameterizedTemplate : 1;  // True when at least one specialized clone exists;
                                        // set by V3Param::deepCloneModule. Suppresses
                                        // width/type errors on the unresolved template.
+    bool m_threadsGroup : 1;  // Partitioned as a group with --threads, marked by THREADS_GROUP
     bool m_verilatorLib : 1;  // Module is a stub for a Verilator produced --lib-create
 protected:
     AstNodeModule(VNType t, FileLine* fl, const string& name, const string& libname)
@@ -373,6 +377,7 @@ protected:
         , m_recursive{false}
         , m_recursiveClone{false}
         , m_parameterizedTemplate{false}
+        , m_threadsGroup{false}
         , m_verilatorLib{false} {}
 
 public:
@@ -425,6 +430,8 @@ public:
     bool recursiveClone() const { return m_recursiveClone; }
     bool parameterizedTemplate() const { return m_parameterizedTemplate; }
     void parameterizedTemplate(bool flag) { m_parameterizedTemplate = flag; }
+    bool threadsGroup() const { return m_threadsGroup; }
+    void threadsGroup(bool flag) { m_threadsGroup = flag; }
     void verilatorLib(bool flag) { m_verilatorLib = flag; }
     bool verilatorLib() const { return m_verilatorLib; }
     VLifetime lifetime() const { return m_lifetime; }
@@ -501,6 +508,8 @@ public:
     inline bool hasCombo() const;
     inline bool hasInitial() const;
     inline bool hasStatic() const;
+    // V3Active puts each AlwaysPostponed alone under a combinational active
+    inline bool isPostponed() const;
 };
 class AstAlias final : public AstNode {
     // Alias construct - Used for source level net alias, and also for variable aliases internally
@@ -1063,6 +1072,7 @@ class AstCoverBin final : public AstNode {
     bool m_isArray = false;  // Bin is an array: of a bin per value or transition, or of
                              // arraySizep() bins
     bool m_isWildcard = false;  // Bin uses wildcard matching (independent of ignore/illegal)
+    bool m_isSetExpr = false;  // Ranges contain one set_covergroup_expression, not a braced list
 
 public:
     AstCoverBin(FileLine* fl, const string& name, AstNode* rangesp, bool isIgnore, bool isIllegal,
@@ -1109,6 +1119,8 @@ public:
     bool isWildcard() const { return m_isWildcard; }
     bool isArray() const { return m_isArray; }
     void isArray(bool flag) { m_isArray = flag; }
+    bool isSetExpr() const { return m_isSetExpr; }
+    void isSetExpr(bool flag) { m_isSetExpr = flag; }
 };
 class AstCoverBinsof final : public AstNode {
     // A binsof selection of a coverpoint or one of its named bins
@@ -3301,6 +3313,9 @@ public:
     // Covergroup options accessors
     int cgAutoBinMax() const { return m_cgAutoBinMax; }
     void cgAutoBinMax(int value) { m_cgAutoBinMax = value; }
+    // Return true if this class is an extension of base class following all extends (SLOW)
+    // Accepts nullptrs
+    static bool isClassDerivedFrom(const AstClass* refClassp, const AstClass* baseClassp);
     // Return true if this class is an extension of base class (SLOW)
     // Accepts nullptrs
     static bool isClassExtendedFrom(const AstClass* refClassp, const AstClass* baseClassp);
