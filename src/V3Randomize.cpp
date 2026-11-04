@@ -8502,6 +8502,9 @@ class RandomizeVisitor final : public VNVisitor {
                 AstNodeExpr* const rootExprp = methodp->fromp();
                 if (AstMemberSel* memberSelp = VN_CAST(rootExprp, MemberSel)) {
                     arrVarp = memberSelp->varp();
+                    // A non-random array is not randomized however it is reached (IEEE
+                    // 1800-2023 18.4), so its size is a state value
+                    if (!arrVarp->rand().isRandomizable()) continue;
                     while (VN_IS(memberSelp->fromp(), MemberSel)) {
                         memberSelp = VN_CAST(memberSelp->fromp(), MemberSel);
                     }
