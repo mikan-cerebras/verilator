@@ -3437,6 +3437,15 @@ class ConstVisitor final : public VNVisitor {
         iterateChildren(nodep);
     }
 
+    // Return element of 'consp' at constant 'indexp', or nullptr if out of range
+    static AstNodeExpr* constArrayElementp(const AstConsArray* consp, const AstConst* indexp) {
+        // An out-of-range index, also one wider than 32 bits, is left to V3Unknown
+        const V3Number& num = indexp->num();
+        const uint32_t elements
+            = VN_AS(consp->dtypep()->skipRefp(), UnpackArrayDType)->elementsConst();
+        if (!num.fitsInUInt() || num.toUInt() >= elements) return nullptr;
+        return consp->valuep(num.toUInt());
+    }
     void visit(AstArraySel* nodep) override {
         iterateAndNextNull(nodep->bitp());
         if (VN_IS(nodep->bitp(), Const)
@@ -3458,9 +3467,8 @@ class ConstVisitor final : public VNVisitor {
         }
         // Handle ARRAYSEL directly on ConsArray (not through VarRef)
         else if (VN_IS(nodep->bitp(), Const) && VN_IS(nodep->fromp(), ConsArray)) {
-            const AstConsArray* const consp = VN_AS(nodep->fromp(), ConsArray);
-            const uint32_t bit = VN_AS(nodep->bitp(), Const)->toUInt();
-            AstNodeExpr* const itemp = consp->valuep(bit);
+            AstNodeExpr* const itemp = constArrayElementp(VN_AS(nodep->fromp(), ConsArray),
+                                                          VN_AS(nodep->bitp(), Const));
             if (VN_IS(itemp, Const)) {
                 const V3Number& num = VN_AS(itemp, Const)->num();
                 VL_DO_DANGLING(replaceNum(nodep, num), nodep);
@@ -3538,7 +3546,8 @@ class ConstVisitor final : public VNVisitor {
             // The selected element, when under a constant select of an array
             const AstConsArray* const consp = VN_CAST(valuep, ConsArray);
             const AstNode* const selItemp
-                = (m_selp && consp) ? consp->valuep(m_selp->bitConst()) : nullptr;
+                = (m_selp && consp) ? constArrayElementp(consp, VN_AS(m_selp->bitp(), Const))
+                                    : nullptr;
             if (nodep->access().isReadOnly() && valuep
                 && ((!m_params  // Can reduce constant wires into equations
                      && m_doNConst && v3Global.opt.fConst() && nodep->varp()->isConst())
