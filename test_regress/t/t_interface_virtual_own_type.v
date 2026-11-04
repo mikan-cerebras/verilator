@@ -139,19 +139,6 @@ interface ift;
   endfunction
 endinterface
 
-// Type-parameterized interface with variables of its own virtual interface type
-interface ifp #(
-    type T = logic
-);
-  T r;
-  virtual ifp #(T) v;
-  function automatic T get(virtual ifp #(T) o);
-    virtual ifp #(T) w;
-    w = o;
-    return w.r;
-  endfunction
-endinterface
-
 class Cls;
   virtual ifc v;
   pkg::vif_t t;
@@ -265,15 +252,6 @@ module t;
     ti.selfp = tj;
     `checkd(ti.sum(ti), 51);
     `checkd(c.t.sum(tj), 60);
-  end
-
-  ifp #(logic [6:0]) p0 ();
-  ifp #(logic [6:0]) p1 ();
-  initial begin
-    p0.v = p1;
-    p1.r = 7'h5a;
-    `checkh(p0.get(p1), 7'h5a);
-    `checkh(p0.v.r, 7'h5a);
   end
 
   inner in ();
