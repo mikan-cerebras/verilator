@@ -232,9 +232,22 @@ static bool isClassHandleArray(AstVar* varp) {
            && VN_IS(arrayElementDTypep(varp->dtypep()), ClassRefDType);
 }
 
+// Static rand_mode array of classp, which may be declared by a base class
+static AstVar* findStaticRandModeVar(VMemberMap& memberMap, AstClass* classp) {
+    while (true) {
+        if (AstVar* const varp = VN_CAST(memberMap.findMember(classp, "__Vstaticrandmode"), Var)) {
+            return varp;
+        }
+        AstClassExtends* const extendsp = classp->extendsp();
+        if (!extendsp) return nullptr;
+        classp = extendsp->classp();
+    }
+}
+
 // Whether the handles on the path objp have rand_mode on (if modes) and are not null (if
 // nonNull), nullptr if nothing to check
-static AstNodeExpr* newHandlesActivep(AstNodeExpr* objp, bool modes, bool nonNull) {
+static AstNodeExpr* newHandlesActivep(VMemberMap& memberMap, AstNodeExpr* objp, bool modes,
+                                      bool nonNull) {
     // The object of an inactive (IEEE 1800-2023 18.8) or null (18.4) handle is not
     // randomized. objp is a chain of member and element selects from a member of 'this'.
     AstNodeExpr* condp = nullptr;
@@ -256,12 +269,15 @@ static AstNodeExpr* newHandlesActivep(AstNodeExpr* objp, bool modes, bool nonNul
             levelp = new AstNeq{fl, objp->cloneTree(false), new AstConst{fl, AstConst::Null{}}};
         }
         const RandomizeMode mode = {.asUQuad = varp->user1()};
-        // Of a rand member, not the mode of a randomize() argument. The rand_mode() of a
-        // static handle is not supported.
-        if (modes && varp->isRand() && mode.usesMode && !varp->lifetime().isStatic()) {
-            AstVar* const modeVarp = getRandModeVarFromClass(VN_AS(varp->user2p(), NodeModule));
+        // Of a rand member, not the mode of a randomize() argument
+        if (modes && varp->isRand() && mode.usesMode) {
+            // The mode of a static handle is in its class's static array
+            const bool isStatic = varp->lifetime().isStatic();
+            AstVar* const modeVarp
+                = isStatic ? findStaticRandModeVar(memberMap, VN_AS(varp->user2p(), Class))
+                           : getRandModeVarFromClass(VN_AS(varp->user2p(), NodeModule));
             AstNodeExpr* modesp;
-            if (ownerp) {
+            if (ownerp && !isStatic) {
                 modesp = new AstMemberSel{fl, ownerp->cloneTree(false), modeVarp};
                 modesp->dtypep(modeVarp->dtypep());
             } else {
@@ -1392,19 +1408,6 @@ class ConstraintExprVisitor final : public VNVisitor {
         return callp;
     };
 
-    // Routes nested sub-objects with static rand vars when the outer class has none.
-    AstVar* findStaticRandModeVarMember(AstClass* classp) const {
-        while (true) {
-            if (AstVar* const varp
-                = VN_CAST(m_memberMap.findMember(classp, "__Vstaticrandmode"), Var)) {
-                return varp;
-            }
-            AstClassExtends* const extendsp = classp->extendsp();
-            if (!extendsp) return nullptr;
-            classp = extendsp->classp();
-        }
-    }
-
     // Mark the one directly-referenced member; it must reach the solver even when it
     // carries no rand qualifier (the constraint refers to it).
     void markConstrainedRandMember(AstStructDType* const structp, const std::string& name) {
@@ -2016,7 +2019,7 @@ class ConstraintExprVisitor final : public VNVisitor {
             callp->addPinsp(namep);
             return callp->makeStmt();
         };
-        AstNodeExpr* activep = newHandlesActivep(memberselp->fromp(), true, false);
+        AstNodeExpr* activep = newHandlesActivep(m_memberMap, memberselp->fromp(), true, false);
         AstVar* const subRandModeVarp = getRandModeVarFromClass(VN_AS(varp->user2p(), NodeModule));
         if (randMode.usesMode && subRandModeVarp) {
             AstMemberSel* const randModeSelp
@@ -2033,7 +2036,8 @@ class ConstraintExprVisitor final : public VNVisitor {
                                     newGenCallp(VCMethod::RANDOMIZER_CLEAR_VAR_DISABLED),
                                     newGenCallp(VCMethod::RANDOMIZER_SET_VAR_DISABLED)});
         }
-        if (AstNodeExpr* const nonNullp = newHandlesActivep(memberselp->fromp(), false, true)) {
+        if (AstNodeExpr* const nonNullp
+            = newHandlesActivep(m_memberMap, memberselp->fromp(), false, true)) {
             regp = new AstIf{fl, nonNullp, regp, newGenCallp(VCMethod::RANDOMIZER_CLEAR_VAR)};
         }
         addRegistrationStmt(regp, initp);
@@ -2212,7 +2216,7 @@ class ConstraintExprVisitor final : public VNVisitor {
             = new AstIf{fl, new AstNeq{fl, atReadp, new AstConst{fl, AstConst::Null{}}}, nullptr};
         loopp->addStmtsp(ifNonNullp);
 
-        AstNodeExpr* const activep = newHandlesActivep(arrayReadRefp, true, false);
+        AstNodeExpr* const activep = newHandlesActivep(m_memberMap, arrayReadRefp, true, false);
         createWriteVarForClassFields(elemClassp, smtName, idxVarp, isUnpackedClassRefArray,
                                      arrayRefp, ifNonNullp, elemClassRefDtp, activep);
         if (activep) VL_DO_DANGLING(activep->deleteTree(), activep);
@@ -2225,7 +2229,7 @@ class ConstraintExprVisitor final : public VNVisitor {
         // randomized on its own
         if (VN_IS(arrayRefp, VarRef)) varp->user3(true);
         // Not through a null member object
-        AstNodeExpr* const nonNullp = newHandlesActivep(arrayRefp, false, true);
+        AstNodeExpr* const nonNullp = newHandlesActivep(m_memberMap, arrayRefp, false, true);
         VL_DO_DANGLING(arrayRefp->deleteTree(), arrayRefp);
         AstBegin* initp = m_inlineInitBlockp;
         if (!initp) {
@@ -2329,8 +2333,9 @@ class ConstraintExprVisitor final : public VNVisitor {
         // a handle array are checked where their fields are selected.
         const bool classHandleArray = isClassHandleArray(varp);
         AstNodeExpr* const handlesActivep
-            = memberselp && !classHandleArray ? newHandlesActivep(memberselp->fromp(), true, false)
-                                              : nullptr;
+            = memberselp && !classHandleArray
+                  ? newHandlesActivep(m_memberMap, memberselp->fromp(), true, false)
+                  : nullptr;
         if ((!randMode.usesMode || classHandleArray) && !handlesActivep) {
             // Global constraints keep nodep alive for write_var processing
             if (!isGlobalConstrained) VL_DO_DANGLING(pushDeletep(nodep), nodep);
@@ -2352,7 +2357,7 @@ class ConstraintExprVisitor final : public VNVisitor {
         const bool varIsStatic = varp->lifetime().isStatic();
         AstClass* const varOwningClassp = varIsStatic ? VN_CAST(varp->user2p(), Class) : nullptr;
         AstVar* const ownerStaticRandModeVarp
-            = varOwningClassp ? findStaticRandModeVarMember(varOwningClassp) : nullptr;
+            = varOwningClassp ? findStaticRandModeVar(m_memberMap, varOwningClassp) : nullptr;
         if (ownerStaticRandModeVarp) {
             randModeAccessp = new AstVarRef{varp->fileline(),
                                             VN_AS(ownerStaticRandModeVarp->user2p(), NodeModule),
@@ -3252,7 +3257,9 @@ class ConstraintExprVisitor final : public VNVisitor {
                     AstNodeExpr* const origp = nodep->cloneTree(false);
                     // The fields of the objects of an inactive array are state variables
                     AstNodeExpr* const activep
-                        = isSimple ? newHandlesActivep(arraySelp->fromp(), true, false) : nullptr;
+                        = isSimple
+                              ? newHandlesActivep(m_memberMap, arraySelp->fromp(), true, false)
+                              : nullptr;
                     iterateChildren(nodep);
                     AstSFormatF* const newp = new AstSFormatF{fl, "%s." + nodep->name(), false,
                                                               nodep->fromp()->unlinkFrBack()};
@@ -3312,7 +3319,8 @@ class ConstraintExprVisitor final : public VNVisitor {
                 VL_RESTORER(m_structSel);
                 m_structSel = true;
                 // The fields of the objects of an inactive array are state variables
-                AstNodeExpr* const activep = newHandlesActivep(cmethodp->fromp(), true, false);
+                AstNodeExpr* const activep
+                    = newHandlesActivep(m_memberMap, cmethodp->fromp(), true, false);
                 AstNodeExpr* const origp = activep ? nodep->cloneTree(false) : nullptr;
                 iterateChildren(nodep);
                 FileLine* const fl = nodep->fileline();
@@ -4605,7 +4613,6 @@ class RandomizeVisitor final : public VNVisitor {
     std::map<AstClass*, VInsertionSet<AstVar*>> m_sizeConstrainedArrays;  // Per-class arrays
     std::map<AstClass*, AstVar*>
         m_staticConstraintModeVars;  // Static constraint mode vars per class
-    std::map<AstClass*, AstVar*> m_staticRandModeVars;  // Static rand mode vars per class
     std::map<AstClass*, std::pair<bool, bool>>
         m_prePostWrap;  // Per-handle-type pre/post virtual wrapper presence
     uint32_t m_uniqueConstraintId = 0;  // current ID of unique call
@@ -4798,20 +4805,11 @@ class RandomizeVisitor final : public VNVisitor {
         return nullptr;
     }
     AstVar* getCreateStaticRandModeVar(AstClass* const classp) {
-        if (m_staticRandModeVars.count(classp)) return m_staticRandModeVars[classp];
-        if (AstClassExtends* const extendsp = classp->extendsp()) {
-            return getCreateStaticRandModeVar(extendsp->classp());
-        }
-        AstVar* const staticModeVarp = createStaticModeVar(classp, "__Vstaticrandmode");
-        m_staticRandModeVars[classp] = staticModeVarp;
-        return staticModeVarp;
+        if (AstVar* const varp = getStaticRandModeVar(classp)) return varp;
+        return createStaticModeVar(classp->baseMostClassp(), "__Vstaticrandmode");
     }
     AstVar* getStaticRandModeVar(AstClass* const classp) {
-        if (m_staticRandModeVars.count(classp)) return m_staticRandModeVars[classp];
-        if (AstClassExtends* const extendsp = classp->extendsp()) {
-            return getStaticRandModeVar(extendsp->classp());
-        }
-        return nullptr;
+        return findStaticRandModeVar(m_memberMap, classp);
     }
     // Get or create the per-element rand_mode state of an array, nullptr if it has none
     AstVar* elemModeVarp(AstVar* const arrVarp) {
@@ -4864,7 +4862,7 @@ class RandomizeVisitor final : public VNVisitor {
         // to point to the package scope when the variable is moved by V3Class.
         modeVarp->user2p(classp);
         classp->addMembersp(modeVarp);
-        // Register so findStaticRandModeVarMember sees it through the already
+        // Register so findStaticRandModeVar sees it through the already
         // scanned member cache
         m_memberMap.insert(classp, modeVarp);
         return modeVarp;
@@ -4993,7 +4991,7 @@ class RandomizeVisitor final : public VNVisitor {
         for (const auto& kv : rootStaticRandModeCount) emitRootStaticModeInit(kv.first, kv.second);
     }
     void emitRootStaticModeInit(AstClass* const rootp, const uint32_t count) {
-        AstVar* const staticRandModeVarp = m_staticRandModeVars[rootp];
+        AstVar* const staticRandModeVarp = getStaticRandModeVar(rootp);
         UASSERT_OBJ(staticRandModeVarp, rootp, "Root must have a static rand-mode var");
         makeStaticModeInit(staticRandModeVarp, rootp, count);
     }
@@ -7172,7 +7170,7 @@ class RandomizeVisitor final : public VNVisitor {
                     const auto it = m_cloneObjps.find(constrp);
                     if (it != m_cloneObjps.end()) {
                         if (AstNodeExpr* const activep
-                            = newHandlesActivep(it->second, true, true)) {
+                            = newHandlesActivep(m_memberMap, it->second, true, true)) {
                             stmtsp = new AstIf{constrp->fileline(), activep, stmtsp};
                         }
                     }
