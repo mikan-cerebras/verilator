@@ -1770,6 +1770,10 @@ class LinkDotFindVisitor final : public VNVisitor {
         }
         // Move body statements (non-port declarations) from the out-of-block task
         // to the prototype task. Rewrite port.X references to just X in the body.
+        // They go in a block named for the task, as their unnamed blocks are numbered
+        // in this module, so would clash with the interface's own.
+        AstBegin* const bodyp
+            = new AstBegin{nodep->fileline(), "__Vexport_" + nodep->name(), nullptr, true};
         for (AstNode* const stmtp : nodep->stmtspList()) {
             // Skip port declarations -- they already exist in the prototype
             if (const AstVar* const varp = VN_CAST(stmtp, Var)) {
@@ -1778,10 +1782,21 @@ class LinkDotFindVisitor final : public VNVisitor {
             // Clone this statement and rewrite port references
             AstNode* const newStmtp = stmtp->cloneTree(false);
             rewriteIfacePortRefsSingle(newStmtp, portName);
-            protoTaskp->addStmtsp(newStmtp);
+            bodyp->addStmtsp(newStmtp);
         }
+        protoTaskp->addStmtsp(bodyp);
         // Mark prototype as no longer prototype (it has a body now)
         protoTaskp->prototype(false);
+        if (m_statep->existsNodeSym(protoTaskp)) {
+            // The interface was visited first, so the body needs its symbols now
+            VL_RESTORER(m_modSymp);
+            VL_RESTORER(m_curSymp);
+            VL_RESTORER(m_ftaskp);
+            m_modSymp = m_statep->getNodeSym(ifaceModp);
+            m_curSymp = m_statep->getNodeSym(protoTaskp);
+            m_ftaskp = protoTaskp;
+            iterate(bodyp);
+        }
         // Delete the out-of-block task from the module
         nodep->unlinkFrBack();
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
