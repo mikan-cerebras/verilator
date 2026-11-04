@@ -20,6 +20,7 @@ class Item;
   rand bit [3:0] sel[];
   rand int unsigned dly[];
   rand int unsigned dmax;
+  rand bit [7:0] pkt[];
   constraint c_size {
     n == 100;
     addr.size() == n;
@@ -27,6 +28,7 @@ class Item;
     pcie.size() == n;
     sel.size() == n;
     dly.size() == n;
+    pkt.size() == n;
   }
   constraint c_dom {
     // A few elements constrained on their own, and all distinct
@@ -40,19 +42,25 @@ class Item;
     foreach (sel[i]) soft sel[i] inside {[0 : 7]};
     dmax == 2;
     foreach (dly[i]) soft dly[i] inside {[1 : dmax]};
+    // A header of more fixed elements than are let conflict alone
+    foreach (pkt[i]) if (i < 6) pkt[i] == 8'(i);
   }
 endclass
 
 // Each wide element splits into parts that can each change, so spreading it takes a
 // satisfied check per element, past the limit on those
-class Wide;
-  rand bit [255:0] w[100];
-  constraint c_low {
-    foreach (w[i]) {
-      w[i][7:0] == 8'(i);
-      w[i][135:128] == 8'(i);
-    }
+`define WIDE(n) \
+  rand bit [255:0] w``n[3]; \
+  constraint c_w``n { \
+    foreach (w``n[i]) { \
+      w``n[i][7:0] == 8'(i); \
+      w``n[i][135:128] == 8'(i); \
+    } \
   }
+class Wide;
+  `WIDE(0) `WIDE(1) `WIDE(2) `WIDE(3) `WIDE(4) `WIDE(5) `WIDE(6) `WIDE(7) `WIDE(8) `WIDE(9)
+  `WIDE(10) `WIDE(11) `WIDE(12) `WIDE(13) `WIDE(14) `WIDE(15) `WIDE(16) `WIDE(17) `WIDE(18)
+  `WIDE(19) `WIDE(20) `WIDE(21) `WIDE(22) `WIDE(23)
 endclass
 
 module t;
@@ -75,6 +83,7 @@ module t;
       automatic int sels[] = new[16];
       automatic int dlys[] = new[3];
       automatic int addrBits[] = new[12];
+      automatic int pktBits[] = new[8];
       `checkd(it.randomize(), 1);
       foreach (it.chip[i]) begin
         ++chips[it.chip[i]];
@@ -89,24 +98,36 @@ module t;
           `checkd(it.addr[i][15:12], 4'h1);
           foreach (addrBits[b]) addrBits[b] += it.addr[i][b];
         end
+        if (i < 6) begin
+          `checkd(it.pkt[i], 8'(i));
+        end
+        else begin
+          foreach (pktBits[b]) pktBits[b] += it.pkt[i][b];
+        end
       end
       // Half of the 100 elements, or for two values, three quarters
       check_spread(chips, 0, 3, 50);
       check_spread(pcies, 0, 7, 50);
       check_spread(sels, 0, 7, 50);
       check_spread(dlys, 1, 2, 75);
-      // Each free address bit is set in about half of the 97 elements
+      // Each free bit is set in about half of the 97 or 94 elements
       foreach (addrBits[b]) begin
         if (addrBits[b] < 24 || addrBits[b] > 73) begin
           $write("%%Error: address bit %0d set in %0d elements\n", b, addrBits[b]);
           `stop;
         end
       end
+      foreach (pktBits[b]) begin
+        if (pktBits[b] < 23 || pktBits[b] > 71) begin
+          $write("%%Error: packet bit %0d set in %0d elements\n", b, pktBits[b]);
+          `stop;
+        end
+      end
     end
     `checkd(wide.randomize(), 1);
-    foreach (wide.w[i]) begin
-      `checkd(wide.w[i][7:0], 8'(i));
-      `checkd(wide.w[i][135:128], 8'(i));
+    foreach (wide.w0[i]) begin
+      `checkd(wide.w0[i][7:0], 8'(i));
+      `checkd(wide.w23[i][135:128], 8'(i));
     end
     $write("*-* All Finished *-*\n");
     $finish;

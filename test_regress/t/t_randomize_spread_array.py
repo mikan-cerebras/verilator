@@ -7,6 +7,8 @@
 # SPDX-FileCopyrightText: 2026 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
+import re
+
 import vltest_bootstrap
 
 test.scenarios('vlt')
@@ -20,8 +22,16 @@ solver_log = test.obj_dir + "/solver.log"
 
 test.execute(all_run_flags=['+verilator+solver+file+' + solver_log])
 
-# Item takes 16 checks to spread its sizes and 124 for its elements, not one per element.
-# Wide stops at the limit of 64 satisfied checks, plus the final check of the literals kept
-test.file_grep_count(solver_log, r'\(check-sat-assuming', 217)
+# Per randomize(), few checks rather than one per element, and at most 64 satisfied ones,
+# which Wide reaches
+most_satisfied = 0
+with open(solver_log, encoding="utf8") as fh:
+    for session in fh.read().split("  (reset)"):
+        replies = re.findall(r'^  \(check-sat-assuming.*\n(?:  .*\n)*?< (\w+)', session, re.M)
+        if len(replies) > 400:
+            test.error("Too many solver checks in one randomize(): " + str(len(replies)))
+        most_satisfied = max(most_satisfied, replies.count("sat"))
+if most_satisfied != 64:
+    test.error("Most satisfied checks in one randomize(): " + str(most_satisfied))
 
 test.passes()
