@@ -1507,15 +1507,17 @@ class WidthVisitor final : public VNVisitor {
             if (!m_doGenerate) {
                 // Must check bounds before adding a select that truncates the bound
                 // Note we've already subtracted off LSB
-                if (VN_IS(nodep->bitp(), Const)
-                    && (VN_AS(nodep->bitp(), Const)->toSInt() > (frommsb - fromlsb)
-                        || VN_AS(nodep->bitp(), Const)->toSInt() < 0)) {
+                const AstConst* const constp = VN_CAST(nodep->bitp(), Const);
+                // An index with X or Z is not an error; a wider value is out of range
+                if (constp && !constp->num().isFourState()
+                    && (!constp->num().fitsInUInt()
+                        || (constp->num().isSigned() && constp->num().isNegative())
+                        || constp->num().toUInt() > static_cast<uint32_t>(frommsb - fromlsb))) {
                     // Suppress in dead/parameterized template modules
                     if (!(m_modep && (m_modep->dead() || m_modep->parameterizedTemplate()))) {
-                        nodep->v3warn(SELRANGE,
-                                      "Selection index out of range: "
-                                          << (VN_AS(nodep->bitp(), Const)->toSInt() + fromlsb)
-                                          << " outside " << frommsb << ":" << fromlsb);
+                        nodep->v3warn(SELRANGE, "Selection index out of range: "
+                                                    << declIndexStr(nodep, constp->num(), fromlsb)
+                                                    << " outside " << frommsb << ":" << fromlsb);
                     }
                 }
                 // Never truncate the index, so V3Unknown's bounds check sees its whole value
@@ -1528,6 +1530,25 @@ class WidthVisitor final : public VNVisitor {
         }
     }
 
+    // Return storage index 'num' of an array with low bound 'lsb' as declared index string
+    static string declIndexStr(const AstNode* nodep, const V3Number& num, int lsb) {
+        // Wide enough that adding 'lsb' cannot overflow
+        const int width = std::max(num.width(), 32) + 1;
+        V3Number numExt{&num, width, 0};
+        if (num.isSigned()) {
+            numExt.opExtendS(num, num.width());
+        } else {
+            numExt.opAssign(num);
+        }
+        V3Number lsbNum{&num, width, 0};
+        lsbNum.opExtendS(V3Number{&num, 32, static_cast<uint32_t>(lsb)}, 32);
+        V3Number declNum{&num, width, 0};
+        declNum.opAdd(numExt, lsbNum);
+        if (!declNum.isNegative()) return declNum.displayed(nodep, "%0d");
+        V3Number posNum{&num, width, 0};
+        posNum.opNegate(declNum);
+        return "-" + posNum.displayed(nodep, "%0d");
+    }
     void visit(AstAssocSel* nodep) override {
         // Signed/Real: Output type based on array-declared type; binary operator
         assertAtExpr(nodep);
