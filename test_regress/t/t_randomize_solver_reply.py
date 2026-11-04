@@ -90,8 +90,8 @@ pin_runs = [
     # Unsat-assumptions reply 1: the first pin round of call 1, naming only literals out of
     # range
     ('oor_assume', 1, 14),
-    # Unsat-assumptions reply 1 on: every core names a0, which each call drops first anyway;
-    # in the round checking whether it can change, a0 is no longer one of the literals, which
+    # Unsat-assumptions reply 1 on: every core names __Va0, which each call drops first anyway;
+    # in the round checking whether it can change, __Va0 is no longer one of the literals, which
     # ends the rounds as untampered
     ('stale_assume', 1, 16),
 ]

@@ -1301,11 +1301,11 @@ int VlRandomizer::bsat(VlSolverSession& sess, size_t bound, std::vector<Witness>
             const Witness& prev = witnesses.back();
             const std::pair<std::string, int>& pick
                 = order[VL_RANDOM_RNG_I(*diversifyRngp) % order.size()];
-            solver << "(declare-fun d" << assumeNum << " () Bool)\n";
-            solver << "(assert (= d" << assumeNum << " (not (=";
+            solver << "(declare-fun __Vd" << assumeNum << " () Bool)\n";
+            solver << "(assert (= __Vd" << assumeNum << " (not (=";
             m_vars.at(pick.first)->emitElement(solver, pick.second);
             solver << ' ' << prev.at(pick.first).at(pick.second) << "))))\n";
-            solver << "(check-sat-assuming (d" << assumeNum << "))\n";
+            solver << "(check-sat-assuming (__Vd" << assumeNum << "))\n";
             ++assumeNum;
             status = sess.readStatus();
         }
@@ -1542,8 +1542,8 @@ void VlRandomizer::solveDiversity(VlRNG& rngr, VlSolverSession& sess,
     std::vector<bool> dropped;
     while (!terms.empty() && checksLeft > 0) {
         for (size_t k = 0; k < terms.size(); ++k) {
-            os << "(declare-fun a" << lits + k << " () Bool)\n";
-            os << "(assert (= a" << lits + k << " (=";
+            os << "(declare-fun __Va" << lits + k << " () Bool)\n";
+            os << "(assert (= __Va" << lits + k << " (=";
             emitTerm(terms[k]);
             os << " #b";
             IData bits = 0;
@@ -1564,7 +1564,7 @@ void VlRandomizer::solveDiversity(VlRNG& rngr, VlSolverSession& sess,
         for (size_t k = 0; k < terms.size(); ++k) {
             const PinTerm& term = terms[k];
             if (!dropped[k]) {
-                keep += " a" + std::to_string(lits + k);
+                keep += " __Va" + std::to_string(lits + k);
             } else if (term.width > 1 && slotIds[k] >= 0) {
                 if (slots.size() <= static_cast<size_t>(slotIds[k])) slots.resize(slotIds[k] + 1);
                 slots[slotIds[k]].push_back(term);
@@ -1594,8 +1594,8 @@ void VlRandomizer::solveDiversity(VlRNG& rngr, VlSolverSession& sess,
         std::vector<std::string> values;
         if (!readValues(sess, values) || values.size() != conflicted.size()) return;
         for (size_t k = 0; k < conflicted.size(); ++k) {
-            os << "(declare-fun a" << lits + k << " () Bool)\n";
-            os << "(assert (= a" << lits + k << " (not (=";
+            os << "(declare-fun __Va" << lits + k << " () Bool)\n";
+            os << "(assert (= __Va" << lits + k << " (not (=";
             emitTerm(conflicted[k]);
             os << ' ' << values[k] << "))))\n";
         }
@@ -1607,7 +1607,7 @@ void VlRandomizer::solveDiversity(VlRNG& rngr, VlSolverSession& sess,
         // bits unspread, so check it alone
         for (size_t k = 0; k < conflicted.size() && checksLeft > 0; ++k) {
             if (!guessed[k]) continue;
-            os << "(check-sat-assuming (" << keep << " a" << lits + k << "))\n";
+            os << "(check-sat-assuming (" << keep << " __Va" << lits + k << "))\n";
             --checksLeft;
             const VlSolverStatus status = sess.readStatus();
             settled = status == VlSolverStatus::SAT;
@@ -1629,11 +1629,11 @@ void VlRandomizer::solveDiversity(VlRNG& rngr, VlSolverSession& sess,
             if (conflicted[parts[0]].width <= diversityWideBits || parts.size() < 2) continue;
             std::string assumed = keep;
             for (size_t i = 0; i < parts.size(); ++i, ++lits) {
-                os << "(declare-fun a" << lits << " () Bool)\n";
-                os << "(assert (= a" << lits << (i ? " (=" : " (not (=");
+                os << "(declare-fun __Va" << lits << " () Bool)\n";
+                os << "(assert (= __Va" << lits << (i ? " (=" : " (not (=");
                 emitTerm(conflicted[parts[i]]);
                 os << ' ' << values[parts[i]] << (i ? ")))\n" : "))))\n");
-                assumed += " a" + std::to_string(lits);
+                assumed += " __Va" + std::to_string(lits);
             }
             os << "(check-sat-assuming (" << assumed << "))\n";
             --checksLeft;
@@ -1686,7 +1686,7 @@ bool VlRandomizer::assumeDropping(VlSolverSession& sess, const std::string& keep
     while (checksLeftr-- > 0) {
         os << "(check-sat-assuming (" << keep;
         for (size_t k = 0; k < terms.size(); ++k) {
-            if (!droppedr[k]) os << " a" << first + k;
+            if (!droppedr[k]) os << " __Va" << first + k;
         }
         os << "))\n";
         const VlSolverStatus status = sess.readStatus();
@@ -1733,7 +1733,7 @@ bool VlRandomizer::assumeDropping(VlSolverSession& sess, const std::string& keep
         if (pickTerm.width == 1 && !conflicts.second) {
             for (size_t i = 0; i < std::min<size_t>(diversitySlotSamples, members.size()); ++i) {
                 if (checksLeftr-- <= 0) return false;
-                os << "(check-sat-assuming (" << keep << " a"
+                os << "(check-sat-assuming (" << keep << " __Va"
                    << first + members[diversitySample(i, members.size())] << "))\n";
                 othersFit = sess.readStatus() == VlSolverStatus::SAT;
                 if (!othersFit) continue;
@@ -1848,7 +1848,7 @@ std::vector<int> VlRandomizer::readUnsatAssumptions(VlSolverSession& sess)
         warnSolverReply(reply);
         return {};
     }
-    // The response lists only "a<N>" literals; collect each full integer run.
+    // The response lists only "__Va<N>" literals; collect each full integer run.
     return scanIntRuns(reply);
 }
 

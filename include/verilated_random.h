@@ -311,7 +311,7 @@ class VlRandomizer VL_NOT_FINAL {
     bool parseModel(std::istream& is, size_t requested);
     // Assert the maximal compatible soft-constraint set onto the open session.
     void relaxSoftConstraints(VlSolverSession& sess);
-    // Indices of the "a<N>" literals named by (get-unsat-assumptions).
+    // Indices of the "__Va<N>" literals named by (get-unsat-assumptions).
     std::vector<int> readUnsatAssumptions(VlSolverSession& sess);
     void reportUnsatSetup(VlSolverSession& sess, const std::vector<std::string>& uniqueExprs);
     void reportUnsatCore(VlSolverSession& sess);
@@ -378,7 +378,7 @@ class VlRandomizer VL_NOT_FINAL {
     // Move the solution towards random values the constraints allow
     void solveDiversity(VlRNG& rngr, VlSolverSession& sess,
                         const std::set<std::string>* fixedp = nullptr);
-    // Assume literals a<first>... (one per term) with keep, dropping conflicting ones until SAT
+    // Assume literals __Va<first>... (one per term) with keep, dropping conflicting ones until SAT
     bool assumeDropping(VlSolverSession& sess, const std::string& keep, int first,
                         const std::vector<PinTerm>& terms, std::vector<bool>& droppedr,
                         int& checksLeftr, std::vector<bool>* guessedp = nullptr,

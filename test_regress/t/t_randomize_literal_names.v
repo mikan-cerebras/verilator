@@ -1,0 +1,53 @@
+// DESCRIPTION: Verilator: Verilog Test module
+//
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2026 Wilson Snyder
+// SPDX-License-Identifier: CC0-1.0
+
+// verilog_format: off
+`define stop $stop
+`define checkd(gotv,expv) do if ((gotv) !== (expv)) begin $write("%%Error: %s:%0d:  got=%0d exp=%0d\n", `__FILE__,`__LINE__, (gotv), (expv)); `stop; end while(0);
+// verilog_format: on
+
+// Random variables named like the solver's own assumption literals
+
+class Scalars;
+  rand bit [7:0] a0;
+  rand bit [7:0] a1;
+  rand bit [7:0] d0;
+  constraint c {
+    a0 > 3;
+    a1 < 10;
+    d0 != a0;
+  }
+endclass
+
+class WithArray;
+  rand bit [7:0] a1;
+  rand bit [7:0] d1;
+  rand bit [7:0] arr[4];
+  constraint c {
+    a1 > 3;
+    d1 < 10;
+    foreach (arr[i]) arr[i] != a1;
+  }
+endclass
+
+module t;
+  initial begin
+    automatic Scalars s = new;
+    automatic WithArray w = new;
+    automatic int ok;
+    repeat (10) begin
+      ok = s.randomize();
+      `checkd(ok, 1);
+      `checkd(s.a0 > 3 && s.a1 < 10 && s.d0 != s.a0, 1'b1);
+      ok = w.randomize();
+      `checkd(ok, 1);
+      `checkd(w.a1 > 3 && w.d1 < 10, 1'b1);
+      foreach (w.arr[i]) `checkd(w.arr[i] != w.a1, 1'b1);
+    end
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
+endmodule
