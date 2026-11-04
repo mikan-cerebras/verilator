@@ -4185,6 +4185,11 @@ class ConstraintExprVisitor final : public VNVisitor {
                                                        VCMethod::DYN_SIZE}
                                   : nullptr;
                 AstNodeExpr* const originalPinp = nodep->pinsp();
+                if (indexIsRand) {
+                    // A negative index stays out of range when sign extended
+                    AstNodeExpr* const pinp = nodep->pinsp()->unlinkFrBack();
+                    nodep->addPinsp(newSmtIndexp(pinp, pinp->isSigned()));
+                }
                 iterateChildren(nodep);
                 AstNodeExpr* const pinp = nodep->pinsp()->unlinkFrBack();
                 AstSFormatF* newp;
