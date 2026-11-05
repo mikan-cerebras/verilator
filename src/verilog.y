@@ -3252,12 +3252,13 @@ defparam_assignment<nodep>:     // ==IEEE: defparam_assignment
                 defparamIdRangeList '.' defparamIdRange '=' expr
                         { $$ = new AstDefParam{$4, $1, *$3, $5}; }
         |       defparamIdRange '=' expr
-                        { $$ = nullptr; BBUNSUP($2, "Unsupported: defparam with no dot");
-                          DEL($3); }
+                        { $$ = new AstDefParam{$2, nullptr, *$1, $3}; }
         ;
 
 defparamIdRangeList<nodeExprp>:  // IEEE: part of defparam_assignment
                 defparamIdRangeExpr                     { $$ = $1; }
+        |       yD_ROOT '.' defparamIdRangeExpr
+                        { $$ = new AstDot{$2, false, new AstParseRef{$<fl>1, "$root"}, $3}; }
         |       defparamIdRangeList '.' defparamIdRangeExpr
                         { $$ = new AstDot{$2, false, $1, $3}; }
         ;
@@ -3266,9 +3267,7 @@ defparamIdRangeExpr<nodeExprp>:  // IEEE: part of defparam_assignment
                 idAny
                         { $$ = new AstParseRef{$<fl>1, *$1, nullptr, nullptr}; }
         |       idAny part_select_rangeList
-                        { $$ = new AstParseRef{$<fl>1, *$1, nullptr, nullptr};
-                          BBUNSUP($2, "Unsupported: defparam with arrayed instance");
-                          DEL($2); }
+                        { $$ = GRAMMARP->scrubSel(new AstParseRef{$<fl>1, *$1, nullptr, nullptr}, $2); }
         ;
 
 defparamIdRange<strp>:  // IEEE: part of defparam_assignment

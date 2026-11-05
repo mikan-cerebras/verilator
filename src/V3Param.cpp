@@ -339,6 +339,10 @@ class ParamProcessor final {
     std::map<AstNodeModule*, DefaultValueMap> m_defaultParameterValues;
     // Module -> a defparam in it or below it, or nullptr (see nestedDefparamp)
     std::map<const AstNodeModule*, const AstPin*> m_nestedDefparamps;
+    // Instance name -> original name of its module, for instances deparameterized so far
+    std::unordered_map<string, string> m_instanceOrigNames;
+    std::vector<FileLine*> m_defparamsSeen;  // Locations of defparam pins, in order seen
+    std::set<const FileLine*> m_defparamsMatched;  // Locations of defparams naming an instance
     VNDeleter m_deleter;  // Used to delay deletion of nodes
     // Class default type paramater dependencies
     std::vector<std::pair<AstParamTypeDType*, int>> m_classTypeParams;
@@ -354,25 +358,42 @@ class ParamProcessor final {
 
     // METHODS
 
+    // Call f on each parameter declared in a named block, task or function of the module
+    template <typename T_Callable>
+    static void foreachScopedParam(AstNodeModule* modp, T_Callable&& f) {
+        // Only a defparam can override these (IEEE 1800-2023 23.10). Parameters in generate
+        // blocks are local, so not searched.
+        for (AstNode* stmtp = modp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            if (VN_IS(stmtp, NodeProcedure) || VN_IS(stmtp, NodeFTask)
+                || VN_IS(stmtp, NodeCoverOrAssert)) {
+                stmtp->foreach([&](AstVar* varp) {
+                    if (varp->isGParam()) f(varp);
+                });
+            }
+        }
+    }
     static void makeSmallNames(AstNodeModule* modp) {
         std::vector<int> usedLetter;
         usedLetter.resize(256);
+        const auto nameVar = [&](AstVar* varp) {
+            char ch = varp->name()[0];
+            ch = std::toupper(ch);
+            if (ch < 'A' || ch > 'Z') ch = 'Z';
+            varp->user3(usedLetter[static_cast<int>(ch)] * 256 + ch);
+            usedLetter[static_cast<int>(ch)]++;
+        };
         // Pass 1, assign first letter to each gparam's name
         for (AstNode* const stmtp : modp->stmtspList()) {
             if (AstVar* const varp = VN_CAST(stmtp, Var)) {
-                if (varp->isGParam() || varp->isIfaceRef()) {
-                    char ch = varp->name()[0];
-                    ch = std::toupper(ch);
-                    if (ch < 'A' || ch > 'Z') ch = 'Z';
-                    varp->user3(usedLetter[static_cast<int>(ch)] * 256 + ch);
-                    usedLetter[static_cast<int>(ch)]++;
-                }
+                if (varp->isGParam() || varp->isIfaceRef()) nameVar(varp);
             } else if (AstParamTypeDType* const typep = VN_CAST(stmtp, ParamTypeDType)) {
                 const char ch = 'T';
                 typep->user3(usedLetter[static_cast<int>(ch)] * 256 + ch);
                 usedLetter[static_cast<int>(ch)]++;
             }
         }
+        // Last, so the names of module-level parameters do not change
+        foreachScopedParam(modp, nameVar);
     }
     static string paramSmallName(AstNodeModule* modp, AstNode* varp) {
         if (varp->user3() <= 1) makeSmallNames(modp);
@@ -609,6 +630,11 @@ class ParamProcessor final {
             if (originalIsCopy) originalParamp = m_originalParams[originalParamp];
             if (originalParamp) clonemapp->emplace(originalParamp, stmtp);
         }
+        foreachScopedParam(modp, [&](AstVar* varp) {
+            const AstNode* const originalParamp = varp->clonep();
+            clonemapp->emplace(originalIsCopy ? m_originalParams[originalParamp] : originalParamp,
+                               varp);
+        });
     }
     void relinkPins(const CloneMap* clonemapp, AstPin* startpinp) {
         for (AstPin* pinp = startpinp; pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
@@ -646,35 +672,9 @@ class ParamProcessor final {
             }
         }
     }
-    static bool hasDescendantDefparams(const AstNodeModule* modp,
-                                       std::set<const AstNodeModule*>& visited) {
-        if (!visited.insert(modp).second) return false;
-        for (AstNode* const stmtp : modp->stmtspList()) {
-            AstCell* const cellp = VN_CAST(stmtp, Cell);
-            if (!cellp) continue;
-            for (AstPin* const pinp : cellp->paramspList()) {
-                if (!pinp->paramPath().empty()) {
-                    visited.erase(modp);
-                    return true;
-                }
-            }
-            if (AstNodeModule* const childModp = cellp->modp()) {
-                if (hasDescendantDefparams(childModp, visited)) {
-                    visited.erase(modp);
-                    return true;
-                }
-            }
-        }
-        visited.erase(modp);
-        return false;
-    }
-    static bool hasDescendantDefparams(const AstNodeModule* modp) {
-        std::set<const AstNodeModule*> visited;
-        return hasDescendantDefparams(modp, visited);
-    }
-    // Return a defparam in the module or below it. Unlike hasDescendantDefparams, also look
-    // inside generate constructs. Memoized, so each module is searched once.
+    // Return a defparam in the module or below it, also inside generate constructs
     const AstPin* nestedDefparamp(const AstNodeModule* modp) {
+        // Memoized, so each module is searched once
         const auto pair = m_nestedDefparamps.emplace(modp, nullptr);
         if (!pair.second) return pair.first->second;  // Searched, or being searched
         const AstPin* foundp = nullptr;
@@ -689,11 +689,55 @@ class ParamProcessor final {
         pair.first->second = foundp;
         return foundp;
     }
+    // Return a hierarchical name without generate loop indices
+    static string withoutIndices(const string& name) {
+        string result;
+        bool inIndex = false;
+        for (const char c : name) {
+            if (c == '[') {
+                inIndex = true;
+            } else if (c == ']') {
+                inIndex = false;
+            } else if (!inIndex) {
+                result += c;
+            }
+        }
+        return result;
+    }
+    // Return if a defparam path, from the module it starts in, names the instance
+    bool defParamNames(const string& path, const string& instanceName) const {
+        // After the module come the generate blocks the defparam is in, without loop indices,
+        // so a defparam in a generate loop applies in each iteration. A loop index written in
+        // the path selects only that iteration.
+        std::deque<string> relNames = VString::split(path, '.');
+        const string anchor = relNames.front();
+        relNames.pop_front();
+        string scope = instanceName;
+        for (auto it = relNames.crbegin(); it != relNames.crend(); ++it) {
+            const size_t dotPos = scope.rfind('.');
+            if (dotPos == string::npos) return false;
+            const string name = scope.substr(dotPos + 1);
+            if (*it != (it->find('[') == string::npos ? withoutIndices(name) : name)) return false;
+            scope.erase(dotPos);
+        }
+        // Instances above are deparameterized first; the top's name is its module's
+        const auto origIt = m_instanceOrigNames.find(scope);
+        return (origIt != m_instanceOrigNames.end() ? origIt->second : scope) == anchor;
+    }
     // Check if parameter setting during instantiation is simple enough for hierarchical Verilation
     void checkSupportedParam(AstNodeModule* modp, AstPin* pinp) const {
         // ConsArray is not supported because that can not be set via -G
         // option.
-        if (pinp->modVarp()) {
+        if (const AstVar* const modvarp = pinp->modVarp()) {
+            // Nor can -G set a parameter in a named block, task or function, only a defparam
+            if (!pinp->paramPath().empty()) {
+                foreachScopedParam(modp, [&](const AstVar* varp) {
+                    if (varp != modvarp) return;
+                    pinp->v3warn(E_UNSUPPORTED, "Unsupported: defparam to a parameter in a named"
+                                                " block, task or function of hierarchical block "
+                                                    << AstNode::prettyNameQ(modp->origName()));
+                });
+            }
             bool supported = false;
             if (const AstConst* const constp = VN_CAST(pinp->exprp(), Const)) {
                 supported = true;
@@ -1903,6 +1947,7 @@ class ParamProcessor final {
             }
             if (originalParamp) m_originalParams[stmtp] = originalParamp;
         }
+        foreachScopedParam(classp, [&](AstVar* varp) { m_originalParams[varp] = varp->clonep(); });
     }
 
     // Set interfaces types inside generic modules
@@ -2143,7 +2188,7 @@ class ParamProcessor final {
                 }
             }
         }
-        if (!any_overrides && VN_IS(nodep, Cell) && hasDescendantDefparams(srcModp)) {
+        if (VN_IS(nodep, Cell) && nestedDefparamp(srcModp)) {
             longname += "__Vdefparam" + V3Hash{srcModp->someInstanceName()}.toString();
             any_overrides = true;
         }
@@ -2400,6 +2445,14 @@ class ParamProcessor final {
     };
 
 public:
+    // Report defparams whose path named no instance once generate loops were elaborated
+    void checkUnmatchedDefparams() {
+        // E.g. a loop index outside the loop's range. Mark each reported, to report it once.
+        for (FileLine* const flp : m_defparamsSeen) {
+            if (!m_defparamsMatched.emplace(flp).second) continue;
+            flp->v3error("In defparam, the path names no instance");
+        }
+    }
     // After an interface cell inside parentModp has been deparameterized
     // (rewired from template to clone), retarget REFDTYPEs that still
     // reference the old template's types so that $bits(iface_typedef)
@@ -2454,9 +2507,25 @@ public:
             = nodeName.empty() ? someInstanceName : (someInstanceName + "." + nodeName);
 
         if (AstCell* const cellp = VN_CAST(nodep, Cell)) {
+            m_instanceOrigNames[instanceName] = srcModp->origName();
+            const auto paramOf = [](const AstPin* pinp) -> const AstNode* {
+                if (pinp->modVarp()) return pinp->modVarp();
+                return pinp->modPTypep();
+            };
+            std::set<const AstNode*> defparamParams;  // Parameters set by a defparam to this cell
             for (AstPin* const pinp : cellp->paramspList()) {
-                if (!pinp->paramPath().empty() && instanceName != pinp->paramPath()
-                    && !VString::endsWith(instanceName, "." + pinp->paramPath())) {
+                if (pinp->paramPath().empty()) continue;
+                m_defparamsSeen.emplace_back(pinp->fileline());
+                if (!defParamNames(pinp->paramPath(), instanceName)) {
+                    VL_DO_DANGLING(pinp->unlinkFrBack()->deleteTree(), pinp);
+                } else {
+                    m_defparamsMatched.emplace(pinp->fileline());
+                    defparamParams.emplace(paramOf(pinp));
+                }
+            }
+            // IEEE 1800-2023 23.10: A defparam overrides the parameter value assignment
+            for (AstPin* const pinp : cellp->paramspList()) {
+                if (pinp->paramPath().empty() && defparamParams.count(paramOf(pinp))) {
                     VL_DO_DANGLING(pinp->unlinkFrBack()->deleteTree(), pinp);
                 }
             }
@@ -3209,7 +3278,7 @@ class ParamVisitor final : public VNVisitor {
             if (!cellParamsReferenceIfacePorts(cellp)) {
                 AstNodeModule* const srcModp = cellp->modp();
                 AstNodeModule* const newModp
-                    = m_processor.nodeDeparam(cellp, srcModp, m_modp, m_modp->someInstanceName());
+                    = m_processor.nodeDeparam(cellp, srcModp, m_modp, cellScopeName(cellp));
                 // Retarget template REFDTYPEs to the clone's types.
                 if (V3LinkDotIfaceCapture::enabled() && cellp->modp() != srcModp) {
                     m_processor.retargetIfaceRefs(m_modp, cellp->name());
@@ -3519,12 +3588,19 @@ class ParamVisitor final : public VNVisitor {
         return false;
     }
 
+    // Return the hierarchical name of the scope of a cell in the current module
+    string cellScopeName(const AstCell* cellp) const {
+        // Including generate blocks, as defparam paths are matched against it
+        const auto it = m_genHierNames.find(cellp);
+        return m_modp->someInstanceName()
+               + (it != m_genHierNames.end() ? it->second : m_generateHierName);
+    }
     void deparamIfaceCellNow(AstCell* cellp) {
         if (!cellp->paramsp()) return;
         if (!VN_IS(cellp->modp(), Iface)) return;
         AstNodeModule* const srcModp = cellp->modp();
         AstNodeModule* const newModp
-            = m_processor.nodeDeparam(cellp, srcModp, m_modp, m_modp->someInstanceName());
+            = m_processor.nodeDeparam(cellp, srcModp, m_modp, cellScopeName(cellp));
         if (newModp && newModp != srcModp) {
             if (V3LinkDotIfaceCapture::enabled()) {
                 m_processor.retargetIfaceRefs(m_modp, cellp->name());
@@ -3690,6 +3766,18 @@ class ParamVisitor final : public VNVisitor {
 
     // Generate Statements
 
+    // Report defparams into a generate branch that is not elaborated, that resolve elsewhere
+    static void checkDroppedDefparams(AstNode* nodep) {
+        // IEEE 1800-2023 23.10.4.2: Resolved after elaboration, the path names the scope
+        // outside the block, but V3LinkDot attached the defparam to an instance in it
+        nodep->foreach([](const AstPin* pinp) {
+            if (!pinp->defparamGenAlt()) return;
+            pinp->v3warn(E_UNSUPPORTED, "Unsupported: defparam into a generate block that is not"
+                                        " elaborated, whose path also names a scope outside it"
+                                        " (IEEE 1800-2023 23.10.4.2)");
+        });
+    }
+
     // Traverse a generate condition (if/case expression, for init/cond/inc).
     //
     // m_cellps assumes a queued ref outlives the drain loop, which holds elsewhere
@@ -3720,6 +3808,7 @@ class ParamVisitor final : public VNVisitor {
             } else {
                 nodep->unlinkFrBack();
             }
+            checkDroppedDefparams(nodep);
             VL_DO_DANGLING(nodep->deleteTree(), nodep);
             // Normal edit rules will now recurse the replacement
         } else {
@@ -3762,7 +3851,8 @@ class ParamVisitor final : public VNVisitor {
             }
         } else {
             VL_RESTORER_COPY(m_generateHierName);
-            m_generateHierName += "." + nodep->prettyName();
+            // An unnamed block that is not a generate scope has no name
+            if (!nodep->name().empty()) m_generateHierName += "." + nodep->prettyName();
             iterateChildren(nodep);
         }
     }
@@ -3825,6 +3915,7 @@ class ParamVisitor final : public VNVisitor {
         } else {
             nodep->unlinkFrBack();
         }
+        checkDroppedDefparams(nodep);
         VL_DO_DANGLING(nodep->deleteTree(), nodep);
     }
 
@@ -3838,6 +3929,7 @@ public:
 
         // Relies on modules already being in top-down-order
         iterate(netlistp);
+        m_processor.checkUnmatchedDefparams();
     }
     ~ParamVisitor() override = default;
     VL_UNCOPYABLE(ParamVisitor);
