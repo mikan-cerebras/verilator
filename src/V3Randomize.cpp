@@ -425,6 +425,13 @@ static bool packedHasEnum(const AstNodeDType* dtypep) {
     return false;
 }
 
+// Whether dtypep is an array of arrays whose elements are class handles
+static bool isMultiDimHandleArray(AstNodeDType* dtypep) {
+    dtypep = dtypep->skipRefp();
+    return dtypep->isNonPackedArray() && dtypep->subDTypep()->skipRefp()->isNonPackedArray()
+           && VN_IS(arrayElementDTypep(dtypep), ClassRefDType);
+}
+
 // Whether dtypep is, or contains anywhere through unpacked array/struct
 // nesting, a real value. A packed struct can't hold one (IEEE disallows
 // real as a packed-struct member), so it's never worth descending into.
@@ -2842,6 +2849,9 @@ class ConstraintExprVisitor final : public VNVisitor {
                                          isGlobalConstrained ? randMode : RandomizeMode{}, initp);
                 // If randc, also emit markRandc() for cyclic tracking
                 if (varp->isRandC()) markRandc(varp, smtName, initp);
+            } else if (isMultiDimHandleArray(varp->dtypep())) {
+                exprp->v3warn(E_UNSUPPORTED, "Unsupported: Constraint referencing a"
+                                             " multi-dimensional array of class handles");
             } else {
                 createSolverVarHandle(varp, structSelOrCMeth, isGlobalConstrained, randMode,
                                       memberselp, smtName, classOrPackagep, classp, initp);
