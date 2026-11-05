@@ -7315,17 +7315,23 @@ class WidthVisitor final : public VNVisitor {
     }
     // Whether a value of type 'fromDtp' is never assignable to type 'toDtp'
     static bool isNeverAssignable(const AstNodeDType* toDtp, const AstNodeDType* fromDtp) {
-        // computeCastable does not decide a class handle against a type that is not a class
-        // (e.g. for a bit-stream cast), but a class handle is assignable only to a class handle,
-        // and only a class handle or null is assignable to one. An array 'toDtp' is left to
-        // computeCastable, as 'fromDtp' may be the element type of an array assignable to it,
-        // and so is an empty queue '{}', which is reported elsewhere.
+        // computeCastable does not decide a class handle or an unpacked array against a type of
+        // another kind (e.g. for a bit-stream cast), but a class handle is assignable only to a
+        // class handle, and only a class handle or null is assignable to one; and an unpacked
+        // array only from an unpacked array of assignable elements (IEEE 1800-2023 7.6). An
+        // empty queue '{}' is left to computeCastable, as it is reported elsewhere.
         const AstNodeDType* const toSkipp = toDtp->skipRefp();
         const AstNodeDType* const fromSkipp = fromDtp->skipRefp();
-        if (VN_IS(toSkipp, ClassRefDType) != VN_IS(fromSkipp, ClassRefDType)
-            && !toSkipp->isNonPackedArray() && !VN_IS(fromSkipp, EmptyQueueDType)) {
-            const AstBasicDType* const fromBasicp = VN_CAST(fromSkipp, BasicDType);
-            return !(fromBasicp && fromBasicp->keyword() == VBasicDTypeKwd::NULLTYPE);
+        if (!VN_IS(fromSkipp, EmptyQueueDType)) {
+            const bool toArray = toSkipp->isNonPackedArray();
+            if (toArray && fromSkipp->isNonPackedArray()) {
+                return isNeverAssignable(toSkipp->subDTypep(), fromSkipp->subDTypep());
+            }
+            if (toArray != fromSkipp->isNonPackedArray()) return true;
+            if (VN_IS(toSkipp, ClassRefDType) != VN_IS(fromSkipp, ClassRefDType)) {
+                const AstBasicDType* const fromBasicp = VN_CAST(fromSkipp, BasicDType);
+                return !(fromBasicp && fromBasicp->keyword() == VBasicDTypeKwd::NULLTYPE);
+            }
         }
         return AstNode::computeCastable(toDtp, fromDtp, nullptr) == VCastable::INCOMPATIBLE;
     }
@@ -7358,8 +7364,8 @@ class WidthVisitor final : public VNVisitor {
         const bool isElement = AstNode::computeCastable(elemDtp, valueDtp, nullptr).isAssignable();
         const bool valueIsArray
             = valueDtp->isNonPackedArray() || VN_IS(valueDtp, WildcardArrayDType);
-        if (!isElement
-            && isNeverAssignable(elemDtp, valueIsArray ? valueDtp->subDTypep() : valueDtp)) {
+        if (!isElement && isNeverAssignable(elemDtp, valueDtp)
+            && (!valueIsArray || isNeverAssignable(elemDtp, valueDtp->subDTypep()))) {
             valuep->v3error("Unpacked array concatenation item is neither an element nor"
                             " an array of elements of its target (IEEE 1800-2023 10.10)"
                             << warnDTypes(valuep, elemDtp, valuep->dtypep(), "Element", "Item"));

@@ -76,4 +76,27 @@ module t;
     iq = {iq, cq};
     cq = {cq, iq};
   end
+
+  typedef Cls cls_t;
+  typedef Other oq_t[$];
+
+  initial begin
+    cls_t tq[$];
+    oq_t oq;
+    Other o;
+    // Typedef'd element and array types
+    tq = {tq, o};
+    tq = {tq, oq};
+  end
+
+  initial begin
+    Cls c;
+    int iq[$];
+    int qq[$][$];
+    Cls cqq[$][$];
+    // Element type that is itself an unpacked array
+    qq = {qq, c};
+    qq = '{c};
+    cqq = {cqq, iq};
+  end
 endmodule
