@@ -9,8 +9,16 @@
 
 import vltest_bootstrap
 
-test.scenarios('linter')
+test.scenarios('vlt')
 
-test.lint(fails=test.vlt_all, expect_filename=test.golden_filename)
+test.lint(fails=True, expect_filename=test.golden_filename)
+
+if not test.have_solver:
+    test.skip("No constraint solver installed")
+
+# The ignored constraints are treated as state
+test.compile(verilator_flags2=['-Wno-CONSTRAINTIGN'])
+
+test.execute()
 
 test.passes()

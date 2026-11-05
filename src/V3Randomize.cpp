@@ -1876,6 +1876,29 @@ class ConstraintExprVisitor final : public VNVisitor {
         return selp;
     }
 
+    // Whether a reduction cannot iterate over the row array selected by exprp
+    static bool unsupportedRowSel(const AstNodeExpr* exprp) {
+        // The rows of a queue, dynamic or associative array are not solver variables, and a
+        // random index would select a dynamically sized row before solving
+        const bool dynRow = !VN_IS(exprp->dtypep()->skipRefp(), UnpackArrayDType);
+        while (true) {
+            if (const AstArraySel* const selp = VN_CAST(exprp, ArraySel)) {
+                if (dynRow && selp->bitp()->exists([](const AstNodeVarRef* refp) {
+                        return refp->varp()->rand().isRandomizable();
+                    })) {
+                    return true;
+                }
+                exprp = selp->fromp();
+            } else if (const AstMemberSel* const selp = VN_CAST(exprp, MemberSel)) {
+                exprp = selp->fromp();
+            } else if (const AstStructSel* const selp = VN_CAST(exprp, StructSel)) {
+                exprp = selp->fromp();
+            } else {
+                return VN_IS(exprp, AssocSel) || VN_IS(exprp, CMethodHard);
+            }
+        }
+    }
+
     // Convert expression to target width using extend or truncate as needed
     AstNodeExpr* adjustWidth(FileLine* fl, AstNodeExpr* exprp, int targetWidth,
                              VSigning targetSigning) {
@@ -4098,12 +4121,18 @@ class ConstraintExprVisitor final : public VNVisitor {
                 nodep->v3fatalSrc("Method not handled in constraints? " << nodep);
                 return;
             }
-            if (!VN_IS(nodep->fromp(), VarRef)) {
-                // Non-dynamic subarrays and member arrays are handled in other parts of code
-                nodep->v3warn(CONSTRAINTIGN, "Unsupported: Array reduction constraint on dynamic "
-                                             "array inside array or struct");
+            if (unsupportedRowSel(nodep->fromp())) {
+                nodep->v3warn(CONSTRAINTIGN,
+                              "Unsupported: Array reduction constraint on array selected from a "
+                              "non-fixed-size array or by a random index, treating as state");
+                nodep->user1(false);
+                if (editFormat(nodep)) return;
+                nodep->v3fatalSrc("Method not handled in constraints? " << nodep);
                 return;
             }
+            // Without 'with', a dynamic subarray or member array (V3Width expands fixed-size
+            // ones) is reduced like 'with (item)'; only an array variable is registered whole
+            const bool perElem = withp || !VN_IS(nodep->fromp(), VarRef);
 
             // Create loop variable and header
             AstVar* const loopVarp
@@ -4114,8 +4143,8 @@ class ConstraintExprVisitor final : public VNVisitor {
             // Determine SMT operation and compute identity elements
             const char* smtOp = nullptr;
             std::string identity;
-            if (withp) {
-                // For 'with' clause: use binary format, compute from result width
+            if (perElem) {
+                // Per element: use binary format, compute from result width
                 const int width = nodep->dtypep()->width();
                 if (nodep->method() == VCMethod::ARRAY_R_SUM) {
                     smtOp = "bvadd";
@@ -4134,7 +4163,7 @@ class ConstraintExprVisitor final : public VNVisitor {
                     identity = "#b" + std::string(width, '0');
                 }
             } else {
-                // For without 'with' clause: use hex format, compute from element width
+                // Whole array variable: use hex format, compute from element width
                 AstVarRef* const arrRefp = VN_CAST(nodep->fromp(), VarRef);
                 UASSERT_OBJ(arrRefp, nodep, "Array reduction in constraint has non-VarRef source");
                 AstVar* const arrVarp = arrRefp->varp();
@@ -4164,10 +4193,10 @@ class ConstraintExprVisitor final : public VNVisitor {
                 }
             }
 
-            // Build loop body based on whether we have a 'with' clause
+            // Build loop body based on whether the reduction is per element
             AstCStmt* const cstmtp = new AstCStmt{fl};
-            if (withp) {
-                // With 'with' clause: evaluate expression for each element
+            if (perElem) {
+                // Per element: evaluate the 'with' expression or the element
                 const bool randArr = nodep->fromp()->user1();
                 AstNodeExpr* const idxRefp = new AstVarRef{fl, loopVarp, VAccess::READ};
                 AstNodeExpr* const elemSelp = newSel(fl, nodep->fromp(), idxRefp);
@@ -4177,7 +4206,8 @@ class ConstraintExprVisitor final : public VNVisitor {
                 const int resultWidth = nodep->dtypep()->width();
                 const VSigning resultSigning = nodep->dtypep()->numeric();
 
-                AstNode* perElemExprp = withp->exprp()->cloneTreePure(false);
+                AstNode* perElemExprp = withp ? withp->exprp()->cloneTreePure(false)
+                                              : elemSelp->cloneTreePure(false);
                 if (AstLambdaArgRef* const rootRefp = VN_CAST(perElemExprp, LambdaArgRef)) {
                     if (rootRefp->index()) {
                         // item.index at root -> replace with loop variable, adjust width
@@ -4189,7 +4219,18 @@ class ConstraintExprVisitor final : public VNVisitor {
                     }
                     VL_DO_DANGLING(rootRefp->deleteTree(), rootRefp);
                 } else {
+                    // Arguments of a nested reduction's 'with' are left to that reduction
+                    std::unordered_set<const AstLambdaArgRef*> nestedArgRefs;
+                    perElemExprp->foreach([&](const AstWith* nestedp) {
+                        nestedp->foreach([&](const AstLambdaArgRef* refp) {
+                            if (refp->name() == nestedp->valueArgRefp()->name()
+                                || refp->name() == nestedp->indexArgRefp()->name()) {
+                                nestedArgRefs.insert(refp);
+                            }
+                        });
+                    });
                     perElemExprp->foreach([&](AstLambdaArgRef* refp) {
+                        if (nestedArgRefs.count(refp)) return;
                         if (refp->index()) {
                             // item.index -> replace with loop variable, adjust width
                             AstVarRef* const loopRefp = new AstVarRef{fl, loopVarp, VAccess::READ};
@@ -4209,10 +4250,13 @@ class ConstraintExprVisitor final : public VNVisitor {
                 perElemExprp = V3Const::constifyEdit(perElemExprp);
 
                 perElemExprp->foreach([&](AstNode* nodep) {
-                    // Don't mark loop variable references as randomizable
+                    // Block temporaries (loop indices of this or an enclosing reduction or
+                    // foreach, captured caller locals) are state, not random variables
                     if (!VN_IS(nodep, Const)) {
                         if (AstNodeVarRef* const vrefp = VN_CAST(nodep, NodeVarRef)) {
-                            if (vrefp->varp() != loopVarp) nodep->user1(true);
+                            if (vrefp->varp()->varType() != VVarType::BLOCKTEMP) {
+                                nodep->user1(true);
+                            }
                         } else {
                             nodep->user1(true);
                         }
@@ -4225,7 +4269,7 @@ class ConstraintExprVisitor final : public VNVisitor {
                 cstmtp->add(";\n");
                 cstmtp->add("ret += \")\";\n");
             } else {
-                // Without 'with' clause: register each element as solver variable
+                // Whole array variable: register each element as solver variable
                 AstVarRef* const arrRefp = VN_CAST(nodep->fromp(), VarRef);
                 AstVar* const arrVarp = arrRefp->varp();
                 const std::string smtArrayName = arrVarp->name();
@@ -4278,8 +4322,8 @@ class ConstraintExprVisitor final : public VNVisitor {
             }
 
             // Build final expression
-            if (withp) {
-                // For 'with' clause: use lambda expression with AstCExpr
+            if (perElem) {
+                // Per element: use lambda expression with AstCExpr
                 AstCExpr* const cexprp = new AstCExpr{fl};
                 cexprp->dtypeSetString();
                 cexprp->add("([&]{\nstd::string ret = \"" + identity + "\";\n");
@@ -4288,7 +4332,7 @@ class ConstraintExprVisitor final : public VNVisitor {
                 cexprp->add("return ret;\n})()");
                 nodep->replaceWith(new AstSFormatF{fl, "%s", false, cexprp});
             } else {
-                // For without 'with' clause: use AstCExpr with conditional
+                // Whole array variable: use AstCExpr with conditional
                 AstCExpr* const cexprp = new AstCExpr{fl};
                 cexprp->dtypeSetString();
                 cexprp->add("([&]{\nstd::string ret;\n");
