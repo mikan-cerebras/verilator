@@ -701,13 +701,21 @@ TriggerKit TriggerKit::create(AstNetlist* netlistp,  //
         trigps.emplace_back(pair.first);
 
         // Add initialization time trigger
-        if (pair.second || v3Global.opt.xInitialEdge()) {
+        AstNodeExpr* rhsp = nullptr;
+        if (pair.second) {
+            rhsp = new AstConst{flp, AstConst::BitTrue{}};
+        } else if (v3Global.opt.xInitialEdge()) {
+            rhsp = senExprBuilder.buildXInitialEdge(senItemp);
+        }
+        if (rhsp) {
             const int wrdIndex = static_cast<int>(i / WORD_SIZE);
             const int bitIndex = static_cast<int>(i % WORD_SIZE);
             AstNodeExpr* const wordp = new AstArraySel{flp, wr(kit.m_vscp), wrdIndex};
             AstNodeExpr* const lhsp = new AstSel{flp, wordp, bitIndex, 1};
-            AstNodeExpr* const rhsp = new AstConst{flp, AstConst::BitTrue{}};
-            if (useAcc) {
+            // The --x-initial-edge value depends on what initial blocks assigned, so it is
+            // computed with the first trigger evaluation. It is never 0 when the edge was
+            // detected, so assigning it does not lose a trigger.
+            if (useAcc && pair.second) {
                 initFuncp->addStmtsp(new AstAssign{flp, lhsp, rhsp});
             } else {
                 initialTrigsp = AstNode::addNext(initialTrigsp, new AstAssign{flp, lhsp, rhsp});
