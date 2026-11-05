@@ -1064,8 +1064,8 @@ class ParamProcessor final {
         newModp->foreach([&](AstPin* pinp) {
             const AstNode* const formalp
                 = pinp->modVarp() ? static_cast<AstNode*>(pinp->modVarp()) : pinp->modPTypep();
-            UASSERT_OBJ(formalp, pinp, "Pin not linked");
-            if (!newStmtps.count(formalp->clonep())) pinp->cloneRelinkGen();
+            // Not linked if not found in an instance in a generate block, see V3LinkDot
+            if (formalp && !newStmtps.count(formalp->clonep())) pinp->cloneRelinkGen();
         });
         return newModp;
     }
