@@ -1177,9 +1177,10 @@ class DelayedVisitor final : public VNVisitor {
             VL_RESTORER(m_procp);
             VL_RESTORER(m_ignoreBlkAndNBlk);
             VL_RESTORER(m_inNonCombLogic);
-            // When we are dealing with initial block we need to
-            // treat it as suspendable when we meet a NBA
-            m_inSuspendableOrFork = nodep->isSuspendable() || VN_IS(nodep, Initial);
+            // When we are dealing with a process under an initial trigger (an initial block, or
+            // an always whose constant sensitivity V3Const reduced to an initial trigger), we
+            // need to treat it as suspendable when we meet a NBA
+            m_inSuspendableOrFork = nodep->isSuspendable() || m_activep->sentreep()->hasInitial();
             m_procp = nodep;
             if (nodep->isSuspendable()) {
                 m_ignoreBlkAndNBlk = false;
