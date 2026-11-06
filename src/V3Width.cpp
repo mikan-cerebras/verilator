@@ -1739,8 +1739,7 @@ class WidthVisitor final : public VNVisitor {
             VL_DANGLING(nodep);
             if (AstCMethodHard* const methodp = VN_CAST(selp, CMethodHard)) {
                 // Element of a dynamic array or queue, which visit(AstCMethodHard) won't revisit
-                iterateCheck(methodp, "Bit select", methodp->pinsp(), SELF, FINAL,
-                             methodp->pinsp()->dtypep(), EXTEND_EXP);
+                iterateCheckSizedSelf(methodp, "Bit select", methodp->pinsp(), SELF, FINAL);
             }
             userIterate(selp, m_vup);
             return;
